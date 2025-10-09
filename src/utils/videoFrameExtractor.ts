@@ -49,7 +49,7 @@ export async function extractLastFrame(videoBlob: Blob): Promise<Blob> {
       }
     });
 
-    video.addEventListener('error', (e) => {
+    video.addEventListener('error', () => {
       URL.revokeObjectURL(video.src);
       reject(new Error(`Video error: ${video.error?.message || 'Unknown error'}`));
     });

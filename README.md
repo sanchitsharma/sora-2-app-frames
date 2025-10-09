@@ -7,6 +7,9 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript)](https://www.typescriptlang.org/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-4.0-38B2AC?logo=tailwind-css)](https://tailwindcss.com/)
 
+
+![Sora Video Generator Screenshot](./screenshot.png)
+
 A beautiful, frontend-heavy web application that lets you generate stunning AI videos with OpenAI Sora 2. All video processing happens in your browser - no server uploads, no data collection.
 
 ## ✨ Features
@@ -111,7 +114,7 @@ Browser → sessionStorage → Edge Function → OpenAI API → Browser → FFmp
 3. **Next Segment**: The extracted frame is passed as `input_reference` to ensure visual continuity
 4. **Result**: Smooth transitions between video segments, mimicking a single continuous video
 
-This technique is inspired by the [Sora 2 API documentation](https://platform.openai.com/docs/guides/video) and ensures professional-looking extended videos.
+This technique is inspired by the [Sora 2 API documentation](https://platform.openai.com/docs/models/sora-2) and ensures professional-looking extended videos.
 
 ## Security
 
