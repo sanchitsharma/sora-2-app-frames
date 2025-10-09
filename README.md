@@ -8,7 +8,7 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-4.0-38B2AC?logo=tailwind-css)](https://tailwindcss.com/)
 
 
-![Sora Video Generator Screenshot](./screenshot.png)
+![Sora Video Generator Screenshot](./public/screenshot.png)
 
 A beautiful, frontend-heavy web application that lets you generate stunning AI videos with OpenAI Sora 2. All video processing happens in your browser - no server uploads, no data collection.
 
