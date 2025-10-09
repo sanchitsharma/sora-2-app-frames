@@ -12,24 +12,24 @@ export function OverallProgress({
   totalSegments,
 }: OverallProgressProps) {
   return (
-    <div className="mt-6 mb-6">
-      <div className="flex justify-between text-sm text-gray-600 mb-2">
-        <span className="font-medium">{status}</span>
+    <div className="mt-8 mb-8 bg-gray-50 p-6 rounded-lg border border-gray-200">
+      <div className="flex justify-between text-sm text-gray-700 mb-4" style={{ fontFamily: 'Inter, sans-serif' }}>
+        <span className="font-medium flex items-center gap-2">
+          <span>⚡</span>
+          {status}
+        </span>
         {currentSegment && totalSegments && (
-          <span>
+          <span className="bg-gray-900 text-white px-3 py-1 rounded-md text-xs font-medium">
             Segment {currentSegment}/{totalSegments}
           </span>
         )}
-        <span className="font-semibold">{progress}%</span>
+        <span className="font-medium text-gray-900">{progress}%</span>
       </div>
-      <div className="h-6 bg-gray-200 rounded-lg overflow-hidden shadow-inner">
+      <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
         <div
-          className="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-blue-600 transition-all duration-300 ease-out flex items-center justify-center text-white text-sm font-semibold relative"
+          className="h-full bg-gray-900 transition-all duration-500 ease-out"
           style={{ width: `${progress}%` }}
-        >
-          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer"></div>
-          {progress > 10 && `${progress}%`}
-        </div>
+        />
       </div>
     </div>
   );

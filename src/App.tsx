@@ -10,6 +10,7 @@ import { useVideoStore } from './stores/videoStore';
 import { openaiService } from './services/openaiService';
 import { videoService } from './services/videoService';
 import { planningService } from './services/planningService';
+import { extractLastFrame } from './utils/videoFrameExtractor';
 import type { PromptFormData, VideoSegment, PlannedSegment } from './types';
 
 export default function App() {
@@ -126,6 +127,7 @@ export default function App() {
 
       const videoBlobs: Blob[] = [];
       const segmentList: VideoSegment[] = [];
+      let lastFrameBlob: Blob | undefined = undefined;
 
       // Generate each segment using planned prompts
       for (let i = 0; i < plannedSegments.length; i++) {
@@ -142,12 +144,14 @@ export default function App() {
         setSegments([...segmentList]);
 
         try {
+          // Create video job with frame continuity (if not first segment)
           const job = await openaiService.createVideo({
             apiKey,
             prompt: plannedSegments[i].prompt,
             seconds: String(plannedSegments[i].seconds),
             size: planConfig.size,
             model: 'sora-2',
+            inputReference: lastFrameBlob, // Use last frame from previous video
           });
 
           await openaiService.pollUntilComplete(job.id, apiKey, (segmentProgress) => {
@@ -167,6 +171,12 @@ export default function App() {
           segment.progress = 100;
           segment.videoBlob = blob;
           setSegments([...segmentList]);
+
+          // Extract last frame for next segment (if not the last segment)
+          if (i < plannedSegments.length - 1) {
+            setStatus(`Extracting frame from segment ${i + 1} for continuity...`);
+            lastFrameBlob = await extractLastFrame(blob);
+          }
         } catch (segmentError: any) {
           segment.status = 'failed';
           segment.error = segmentError.message || 'Failed to generate segment';
@@ -236,6 +246,7 @@ export default function App() {
 
       const videoBlobs: Blob[] = [];
       const segmentList: VideoSegment[] = [];
+      let lastFrameBlob: Blob | undefined = undefined;
 
       // Generate each segment
       for (let i = 0; i < formData.numSegments; i++) {
@@ -253,13 +264,14 @@ export default function App() {
         setSegments([...segmentList]);
 
         try {
-          // Create video job
+          // Create video job with frame continuity (if not first segment)
           const job = await openaiService.createVideo({
             apiKey,
             prompt: formData.prompt,
             seconds: String(formData.seconds), // Convert to string for OpenAI API
             size: formData.size,
             model: 'sora-2',
+            inputReference: lastFrameBlob, // Use last frame from previous video
           });
 
           // Poll for completion
@@ -284,6 +296,12 @@ export default function App() {
           segment.progress = 100;
           segment.videoBlob = blob;
           setSegments([...segmentList]);
+
+          // Extract last frame for next segment (if not the last segment)
+          if (i < formData.numSegments - 1) {
+            setStatus(`Extracting frame from segment ${i + 1} for continuity...`);
+            lastFrameBlob = await extractLastFrame(blob);
+          }
         } catch (segmentError: any) {
           segment.status = 'failed';
           segment.error = segmentError.message || 'Failed to generate segment';
@@ -333,33 +351,38 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 py-8 px-4">
-      <div className="max-w-4xl mx-auto">
-        <header className="text-center mb-8">
-          <h1 className="text-5xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent mb-2">
-            Sora Video Generation
+    <div className="min-h-screen bg-white py-16 px-4">
+      <div className="max-w-5xl mx-auto">
+        <header className="text-center mb-16">
+          <div className="inline-block mb-6">
+            <div className="w-16 h-16 mx-auto flex items-center justify-center text-4xl">
+              🎬
+            </div>
+          </div>
+          <h1 className="text-7xl font-serif mb-6 text-gray-900 tracking-tight leading-tight" style={{ fontFamily: 'Lora, Georgia, serif' }}>
+            Create cinematic videos with natural language
           </h1>
-          <p className="text-gray-600">
-            Generate AI videos with OpenAI Sora 2 - Powered by FFmpeg.wasm
+          <p className="text-gray-600 text-lg max-w-2xl mx-auto leading-relaxed" style={{ fontFamily: 'Inter, sans-serif' }}>
+            Generate extended AI videos with OpenAI Sora 2. Seamless frame continuity, AI-powered planning, and browser-based processing.
           </p>
         </header>
 
         {showMobileWarning && (
-          <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 rounded-lg mb-6">
-            <div className="flex items-start">
-              <span className="text-yellow-600 text-xl mr-3">⚠️</span>
-              <div>
-                <h3 className="text-sm font-medium text-yellow-800">
+          <div className="bg-amber-50 border border-amber-200 p-6 rounded-lg mb-8 max-w-3xl mx-auto">
+            <div className="flex items-start gap-4">
+              <span className="text-amber-600 text-xl">⚠️</span>
+              <div className="flex-1">
+                <h3 className="text-sm font-medium text-amber-900 mb-1" style={{ fontFamily: 'Inter, sans-serif' }}>
                   Mobile Browser Detected
                 </h3>
-                <p className="text-sm text-yellow-700 mt-1">
+                <p className="text-sm text-amber-700 leading-relaxed">
                   This application works best on desktop browsers. Mobile devices may have
                   memory limitations that could cause issues with large videos.
                 </p>
               </div>
               <button
                 onClick={() => setShowMobileWarning(false)}
-                className="ml-auto text-yellow-600 hover:text-yellow-800"
+                className="text-amber-600 hover:text-amber-900 transition-colors text-lg"
               >
                 ✕
               </button>
@@ -367,15 +390,18 @@ export default function App() {
           </div>
         )}
 
-        <div className="bg-white rounded-lg shadow-xl p-8">
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-10 max-w-3xl mx-auto">
           <ApiKeyInput />
 
           {error && <ErrorDisplay error={error} onDismiss={() => setError(null)} />}
 
           {!ffmpegReady && !error && (
-            <div className="text-center py-8">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
-              <p className="text-gray-600">Loading FFmpeg.wasm...</p>
+            <div className="text-center py-16">
+              <div className="relative inline-block">
+                <div className="animate-spin rounded-full h-12 w-12 border-2 border-gray-200 border-t-gray-900 mx-auto mb-6"></div>
+              </div>
+              <p className="text-gray-900 font-medium text-base mb-2" style={{ fontFamily: 'Inter, sans-serif' }}>Loading FFmpeg.wasm...</p>
+              <p className="text-gray-500 text-sm">Preparing video processing engine</p>
             </div>
           )}
 
@@ -419,12 +445,12 @@ export default function App() {
           {finalVideoUrl && <VideoPlayer url={finalVideoUrl} onGenerateNew={handleGenerateNew} />}
         </div>
 
-        <footer className="text-center mt-8 text-sm text-gray-500">
-          <p>
+        <footer className="text-center mt-20 text-sm text-gray-500">
+          <p className="mb-2" style={{ fontFamily: 'Inter, sans-serif' }}>
             Made with React, TypeScript, Vercel Edge Functions, and FFmpeg.wasm
           </p>
-          <p className="mt-1">
-            Your API key and videos never leave your device
+          <p className="text-xs text-gray-400">
+            🔒 Your API key and videos never leave your device
           </p>
         </footer>
       </div>

@@ -47,11 +47,13 @@ export function VideoPlayer({ url, videoId, onGenerateNew, onRemix }: VideoPlaye
   };
 
   return (
-    <div className="mt-8">
-      <div className="bg-white rounded-lg shadow-lg p-6">
-        <h2 className="text-xl font-bold mb-4">Generated Video</h2>
+    <div className="mt-10">
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-10">
+        <h2 className="text-3xl font-serif text-gray-900 mb-8" style={{ fontFamily: 'Lora, Georgia, serif' }}>
+          Your Video
+        </h2>
 
-        <div className="relative rounded-lg overflow-hidden bg-black">
+        <div className="relative rounded-lg overflow-hidden bg-black border border-gray-300">
           <video
             ref={videoRef}
             src={url}
@@ -67,33 +69,39 @@ export function VideoPlayer({ url, videoId, onGenerateNew, onRemix }: VideoPlaye
           />
         </div>
 
-        <div className="flex gap-3 mt-6">
+        <div className="flex gap-4 mt-8">
           <button
             onClick={handleDownload}
-            className="flex-1 px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors font-medium"
+            className="flex-1 px-8 py-4 bg-gray-100 text-gray-900 rounded-lg hover:bg-gray-200 transition-all font-medium text-base border border-gray-300"
+            style={{ fontFamily: 'Inter, sans-serif' }}
           >
             📥 Download
           </button>
           {videoId && onRemix && (
             <button
               onClick={() => onRemix(videoId)}
-              className="flex-1 px-6 py-3 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors font-medium"
+              className="flex-1 px-8 py-4 bg-gray-100 text-gray-900 rounded-lg hover:bg-gray-200 transition-all font-medium text-base border border-gray-300"
               title="Create a variation of this video"
+              style={{ fontFamily: 'Inter, sans-serif' }}
             >
               🎨 Remix
             </button>
           )}
           <button
             onClick={onGenerateNew}
-            className="flex-1 px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors font-medium"
+            className="flex-1 px-8 py-4 bg-black text-white rounded-lg hover:bg-gray-800 transition-all font-medium text-base"
+            style={{ fontFamily: 'Inter, sans-serif' }}
           >
             ✨ Generate New
           </button>
         </div>
 
-        <p className="text-xs text-gray-500 mt-4 text-center">
-          Video processed entirely in your browser with FFmpeg.wasm
-        </p>
+        <div className="mt-6 bg-gray-50 p-4 rounded-lg border border-gray-200">
+          <p className="text-sm text-gray-600 text-center leading-relaxed flex items-center justify-center gap-2" style={{ fontFamily: 'Inter, sans-serif' }}>
+            <span>🔒</span>
+            Video processed entirely in your browser with FFmpeg.wasm
+          </p>
+        </div>
       </div>
     </div>
   );

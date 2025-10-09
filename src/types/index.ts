@@ -35,6 +35,7 @@ export interface CreateVideoRequest {
   size: string;
   model: string;
   remixedFromVideoId?: string; // Optional: ID of video to remix from
+  inputReference?: Blob; // Optional: Image for frame continuity (last frame of previous video)
 }
 
 // Planned Segment from AI

@@ -10,6 +10,27 @@ export const openaiService = {
    * @returns Video job with id and status
    */
   async createVideo(request: CreateVideoRequest): Promise<VideoJob> {
+    // If inputReference is provided, use FormData for multipart/form-data
+    if (request.inputReference) {
+      const formData = new FormData();
+      formData.append('apiKey', request.apiKey);
+      formData.append('prompt', request.prompt);
+      formData.append('seconds', request.seconds);
+      formData.append('size', request.size);
+      formData.append('model', request.model);
+      formData.append('inputReference', request.inputReference, 'frame.jpg');
+
+      if (request.remixedFromVideoId) {
+        formData.append('remixedFromVideoId', request.remixedFromVideoId);
+      }
+
+      const response = await axios.post(`${API_BASE}/proxy-create-video`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return response.data;
+    }
+
+    // Otherwise use JSON
     const response = await axios.post(`${API_BASE}/proxy-create-video`, request);
     return response.data;
   },

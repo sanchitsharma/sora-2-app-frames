@@ -12,8 +12,28 @@ export default async function handler(req: Request) {
   }
 
   try {
-    const body = await req.json();
-    const { apiKey, prompt, seconds, size, model, remixedFromVideoId } = body;
+    const contentType = req.headers.get('content-type') || '';
+    let apiKey, prompt, seconds, size, model, remixedFromVideoId, inputReference;
+
+    // Handle both JSON and multipart/form-data
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await req.formData();
+      apiKey = formData.get('apiKey');
+      prompt = formData.get('prompt');
+      seconds = formData.get('seconds');
+      size = formData.get('size');
+      model = formData.get('model');
+      remixedFromVideoId = formData.get('remixedFromVideoId');
+      inputReference = formData.get('inputReference'); // File object
+    } else {
+      const body = await req.json();
+      apiKey = body.apiKey;
+      prompt = body.prompt;
+      seconds = body.seconds;
+      size = body.size;
+      model = body.model;
+      remixedFromVideoId = body.remixedFromVideoId;
+    }
 
     // Validate API key format
     if (!apiKey || !apiKey.startsWith('sk-')) {
@@ -43,20 +63,40 @@ export default async function handler(req: Request) {
     }
 
     // Forward request to OpenAI API
-    const openaiResponse = await fetch('https://api.openai.com/v1/videos', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        prompt,
-        seconds: secondsStr, // Ensure it's a string
-        ...(size && { size }),
-        ...(remixedFromVideoId && { remixed_from_video_id: remixedFromVideoId })
-      }),
-    });
+    // If inputReference is provided, use multipart/form-data
+    let openaiResponse;
+    if (inputReference) {
+      const openaiFormData = new FormData();
+      openaiFormData.append('model', model);
+      openaiFormData.append('prompt', prompt);
+      openaiFormData.append('seconds', secondsStr);
+      if (size) openaiFormData.append('size', size);
+      if (remixedFromVideoId) openaiFormData.append('remixed_from_video_id', remixedFromVideoId);
+      openaiFormData.append('input_reference', inputReference);
+
+      openaiResponse = await fetch('https://api.openai.com/v1/videos', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: openaiFormData,
+      });
+    } else {
+      openaiResponse = await fetch('https://api.openai.com/v1/videos', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          prompt,
+          seconds: secondsStr,
+          ...(size && { size }),
+          ...(remixedFromVideoId && { remixed_from_video_id: remixedFromVideoId })
+        }),
+      });
+    }
 
     // Check for errors
     if (!openaiResponse.ok) {
