@@ -6,12 +6,15 @@ import { OverallProgress } from './components/OverallProgress';
 import { SegmentProgress } from './components/SegmentProgress';
 import { VideoPlayer } from './components/VideoPlayer';
 import { ErrorDisplay } from './components/ErrorDisplay';
+import { VideoHistoryGallery } from './components/VideoHistoryGallery';
+import { RemixModal } from './components/RemixModal';
 import { useVideoStore } from './stores/videoStore';
 import { openaiService } from './services/openaiService';
 import { videoService } from './services/videoService';
 import { planningService } from './services/planningService';
 import { extractLastFrame } from './utils/videoFrameExtractor';
-import type { PromptFormData, VideoSegment, PlannedSegment } from './types';
+import type { PromptFormData, VideoSegment, PlannedSegment, VideoMetadata } from './types';
+import { calculateExpiresAt, isVideoExpired } from './types';
 
 export default function App() {
   const {
@@ -25,6 +28,12 @@ export default function App() {
     ffmpegReady,
     setFFmpegReady,
     reset,
+    saveVideoMetadata,
+    videoHistory,
+    selectVideoForRemix,
+    selectedVideoForRemix,
+    incrementRemixCount,
+    deleteVideoMetadata,
   } = useVideoStore();
 
   const [progress, setProgress] = useState(0);
@@ -36,6 +45,8 @@ export default function App() {
   const [plannedSegments, setPlannedSegments] = useState<PlannedSegment[] | null>(null);
   const [isPlanning, setIsPlanning] = useState(false);
   const [planConfig, setPlanConfig] = useState<PromptFormData | null>(null);
+  const [showRemixModal, setShowRemixModal] = useState(false);
+  const [showVideoHistory, setShowVideoHistory] = useState(false);
 
   // Initialize FFmpeg on mount
   useEffect(() => {
@@ -172,6 +183,29 @@ export default function App() {
           segment.videoBlob = blob;
           setSegments([...segmentList]);
 
+          // Store OpenAI video ID and creation time in segment
+          segment.openaiVideoId = job.id;
+          segment.createdAt = Date.now();
+          setSegments([...segmentList]);
+
+          // Save metadata for this segment to history
+          // segment.prompt already contains plannedSegments[i].prompt (set on line 139)
+          const segmentMetadata: VideoMetadata = {
+            openaiVideoId: job.id,
+            localId: `planned-segment-${i}-${Date.now()}`,
+            prompt: segment.prompt,  // AI-planned segment-specific prompt
+            parameters: {
+              seconds: plannedSegments[i].seconds,
+              size: planConfig.size,
+              model: 'sora-2',
+            },
+            createdAt: Date.now(),
+            expiresAt: calculateExpiresAt(Date.now()),
+            remixCount: 0,
+            isExpired: false,
+          };
+          saveVideoMetadata(segmentMetadata);
+
           // Extract last frame for next segment (if not the last segment)
           if (i < plannedSegments.length - 1) {
             setStatus(`Extracting frame from segment ${i + 1} for continuity...`);
@@ -297,6 +331,30 @@ export default function App() {
           segment.videoBlob = blob;
           setSegments([...segmentList]);
 
+          // Store OpenAI video ID and creation time in segment
+          segment.openaiVideoId = job.id;
+          segment.createdAt = Date.now();
+          setSegments([...segmentList]);
+
+          // Save metadata for this segment to history
+          // CRITICAL: Use segment.prompt (not formData.prompt) to capture the actual prompt used
+          // This works for both manual generation and AI-planned segments
+          const segmentMetadata: VideoMetadata = {
+            openaiVideoId: job.id,
+            localId: `segment-${i}-${Date.now()}`,
+            prompt: segment.prompt,  // Use segment.prompt for accurate prompt tracking
+            parameters: {
+              seconds: formData.seconds,
+              size: formData.size,
+              model: 'sora-2',
+            },
+            createdAt: Date.now(),
+            expiresAt: calculateExpiresAt(Date.now()),
+            remixCount: 0,
+            isExpired: false,
+          };
+          saveVideoMetadata(segmentMetadata);
+
           // Extract last frame for next segment (if not the last segment)
           if (i < formData.numSegments - 1) {
             setStatus(`Extracting frame from segment ${i + 1} for continuity...`);
@@ -348,6 +406,133 @@ export default function App() {
     setCurrentSegment(0);
     setTotalSegments(0);
     setSegments([]);
+  };
+
+  const handleRemix = async (newPrompt: string, keepSettings: boolean) => {
+    if (!selectedVideoForRemix || !apiKey) return;
+
+    // Check expiration
+    if (isVideoExpired(selectedVideoForRemix)) {
+      setError('This video has expired. Remix is only available for 24 hours after generation.');
+      return;
+    }
+
+    setError(null);
+    reset();
+    setProcessing(true);
+
+    try {
+      setStatus('Creating remix...');
+
+      // Use original settings if keepSettings is true
+      const config = keepSettings
+        ? {
+            prompt: newPrompt,
+            seconds: selectedVideoForRemix.parameters.seconds,
+            size: selectedVideoForRemix.parameters.size,
+            model: selectedVideoForRemix.parameters.model,
+          }
+        : {
+            prompt: newPrompt,
+            seconds: 8,
+            size: '1280x720',
+            model: 'sora-2',
+          };
+
+      // Create segment
+      const segment: VideoSegment = {
+        id: 'remix-segment-0',
+        prompt: newPrompt,
+        status: 'generating',
+        progress: 0,
+        createdAt: Date.now(),
+      };
+      const segmentList = [segment];
+      setSegments(segmentList);
+
+      // Call OpenAI with remixedFromVideoId
+      const job = await openaiService.createVideo({
+        apiKey,
+        prompt: newPrompt,
+        seconds: String(config.seconds),
+        size: config.size,
+        model: config.model,
+        remixedFromVideoId: selectedVideoForRemix.openaiVideoId, // KEY: Pass original video ID
+      });
+
+      // Store OpenAI video ID immediately
+      segment.openaiVideoId = job.id;
+      setSegments([...segmentList]);
+
+      // Poll for completion
+      await openaiService.pollUntilComplete(job.id, apiKey, (segmentProgress) => {
+        segment.progress = segmentProgress;
+        setSegments([...segmentList]);
+      });
+
+      // Download
+      setStatus('Downloading remixed video...');
+      const blob = await openaiService.downloadVideo(job.id, apiKey);
+      const url = URL.createObjectURL(blob);
+
+      // Update segment
+      segment.status = 'completed';
+      segment.progress = 100;
+      segment.videoBlob = blob;
+      segment.videoUrl = url;
+      setSegments([...segmentList]);
+
+      setFinalVideo(url);
+      setStatus('Remix complete!');
+
+      // Save metadata to history with relationship
+      const remixMetadata: VideoMetadata = {
+        openaiVideoId: job.id,
+        localId: `remix-${Date.now()}`,
+        prompt: newPrompt,
+        parameters: config,
+        createdAt: Date.now(),
+        expiresAt: calculateExpiresAt(Date.now()),
+        remixedFrom: selectedVideoForRemix.openaiVideoId, // Link to parent
+        remixCount: 0,
+        isExpired: false,
+      };
+
+      saveVideoMetadata(remixMetadata);
+
+      // Increment parent's remix count
+      incrementRemixCount(selectedVideoForRemix.openaiVideoId);
+
+      // Clear selection
+      selectVideoForRemix(null);
+    } catch (err) {
+      console.error('[App] Remix failed:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Remix failed';
+      setError(errorMessage);
+      if (segments.length > 0) {
+        const seg = segments[0];
+        seg.status = 'failed';
+        seg.error = errorMessage;
+        setSegments([...segments]);
+      }
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const handleRemixClick = (metadata: VideoMetadata) => {
+    if (isVideoExpired(metadata)) {
+      alert('This video has expired. Remix is only available for 24 hours after generation.');
+      return;
+    }
+    selectVideoForRemix(metadata);
+    setShowRemixModal(true);
+  };
+
+  const handleDeleteMetadata = (openaiVideoId: string) => {
+    if (confirm('Delete this video from history? (This only removes metadata, not the video file if you downloaded it)')) {
+      deleteVideoMetadata(openaiVideoId);
+    }
   };
 
   return (
@@ -444,6 +629,46 @@ export default function App() {
 
           {finalVideoUrl && <VideoPlayer url={finalVideoUrl} onGenerateNew={handleGenerateNew} />}
         </div>
+
+        {/* Video History Section */}
+        {videoHistory.length > 0 && (
+          <section className="mb-12 mt-12">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">📚 Video History</h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  Video metadata saved for 24 hours. Remix any video before it expires.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowVideoHistory(!showVideoHistory)}
+                className="text-blue-600 hover:text-blue-700 text-sm font-semibold"
+              >
+                {showVideoHistory ? 'Hide' : 'Show'} History ({videoHistory.length})
+              </button>
+            </div>
+
+            {showVideoHistory && (
+              <VideoHistoryGallery
+                videoHistory={videoHistory}
+                onRemix={handleRemixClick}
+                onDelete={handleDeleteMetadata}
+                apiKey={apiKey}
+              />
+            )}
+          </section>
+        )}
+
+        {/* Remix Modal */}
+        <RemixModal
+          originalMetadata={selectedVideoForRemix}
+          isOpen={showRemixModal}
+          onClose={() => {
+            setShowRemixModal(false);
+            selectVideoForRemix(null);
+          }}
+          onSubmit={handleRemix}
+        />
 
         <footer className="text-center mt-20 text-sm text-gray-500">
           <p className="mb-2" style={{ fontFamily: 'Inter, sans-serif' }}>

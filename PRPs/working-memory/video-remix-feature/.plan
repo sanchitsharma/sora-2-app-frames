@@ -1,0 +1,1397 @@
+# PRP: Video Remix Feature for Sora Video Generator
+
+## 🎯 Goal
+
+### Feature Goal
+Enable users to remix previously generated videos within the 24-hour OpenAI availability window by storing video metadata (not video files) and using the `remix_video_id` parameter to create variations with new prompts.
+
+### Deliverable
+A fully functional video remix feature that:
+1. Stores video metadata (OpenAI video_id, prompt, parameters, timestamp) in localStorage
+2. Displays a gallery of video history with metadata
+3. Allows users to remix individual video segments within 24 hours of generation
+4. Tracks parent-child relationships between original and remixed videos
+5. Shows expiration warnings when videos are older than 24 hours
+6. Maintains privacy-first approach (no video file uploads, only metadata stored)
+
+### Success Definition
+- Users can click "Remix" on any video segment generated within last 24 hours
+- Remix form pre-populates with original video's settings
+- New remixes are generated using `remixed_from_video_id` parameter
+- Video history shows relationship indicators ("Remixed from", "X remixes", "⏰ Expired")
+- Metadata persists across page refreshes
+- Videos older than 24 hours show disabled remix button with expiration notice
+- Only individual segments can be remixed (not concatenated final videos)
+
+---
+
+## 📚 Context
+
+### YAML Reference Structure
+
+```yaml
+api_documentation:
+  primary: "PRPs/ai_docs/sora-2-remix-api.md"
+  official_docs: "https://platform.openai.com/docs/guides/video-generation"
+  cookbook: "https://cookbook.openai.com/examples/sora/sora2_prompting_guide"
+  critical_limitations:
+    - "Videos available for remix ONLY 24 hours after generation"
+    - "After 24 hours, video_id becomes invalid at OpenAI"
+    - "Concatenated videos have no single OpenAI video_id"
+    - "Only individual segments have valid video_id for remix"
+    - "seconds parameter must be STRING format ('4', '8', '12')"
+    - "Max 2 concurrent jobs (standard), 5 (relaxed mode)"
+
+storage_architecture:
+  approach: "Metadata-only storage (no video file storage)"
+  rationale:
+    - "Videos stay in browser memory (RAM) as Blobs during current session"
+    - "Only metadata (~200-600 bytes per video) stored in localStorage"
+    - "Privacy-first: No video uploads, no backend storage"
+    - "Remix only needs video_id, not the video file itself"
+    - "Users download videos to their filesystem if they want to keep them"
+
+  storage_locations:
+    openai_servers: "24 hours, requires video_id + API key to access"
+    browser_memory: "Current session only, Blob objects in RAM"
+    localStorage: "Persistent metadata only (~1 KB per video)"
+    user_filesystem: "User downloads videos via browser download"
+
+  what_persists:
+    - "OpenAI video_id (string, ~20 bytes)"
+    - "Prompt text (~100-500 bytes)"
+    - "Generation parameters (model, size, seconds)"
+    - "Timestamps (createdAt, expiresAt)"
+    - "Parent-child relationships (remixedFrom, remixCount)"
+
+  what_does_not_persist:
+    - "Video Blob objects (lost on page refresh)"
+    - "Object URLs (revoked on refresh)"
+    - "Video player state"
+    - "Thumbnail images (can be regenerated from re-download)"
+
+codebase_patterns:
+  similar_features:
+    - "inputReference blob handling (src/services/openaiService.ts:13-35)"
+    - "Frame continuity pipeline (src/App.tsx:147-179)"
+    - "FormData vs JSON dual handling (api/proxy-create-video.ts:68-99)"
+    - "API key storage via storageService (src/services/storageService.ts)"
+
+  existing_infrastructure:
+    - "remixedFromVideoId already in CreateVideoRequest (src/types/index.ts:37)"
+    - "Edge function already forwards remix_video_id (api/proxy-create-video.ts:74-75)"
+    - "VideoPlayer has download button (src/components/VideoPlayer.tsx)"
+    - "80% of infrastructure complete, missing only UI integration"
+
+  critical_gaps:
+    - "VideoSegment.id is local ('segment-0'), NOT OpenAI video ID"
+    - "job.id from createVideo() is currently lost after download (App.tsx:268-291)"
+    - "No storage for video metadata across sessions"
+    - "remixedFromVideoId in CreateVideoRequest never set by UI"
+    - "Multi-segment concatenated videos have no single OpenAI video_id"
+
+  generation_flows:
+    manual_generation:
+      - "handleGenerate (App.tsx:214-338): Uses same prompt for all segments"
+      - "All segments get formData.prompt"
+      - "segment.prompt = formData.prompt (App.tsx:259)"
+
+    ai_planned_generation:
+      - "handleApprovePlan (App.tsx:116-212): Each segment has unique AI-generated prompt"
+      - "Uses plannedSegments[i].prompt for each segment"
+      - "segment.prompt = plannedSegments[i].prompt (App.tsx:139)"
+      - "Different prompts per segment for narrative continuity"
+
+    prompt_capture_strategy:
+      - "ALWAYS use segment.prompt when saving metadata (not formData.prompt)"
+      - "segment.prompt contains the ACTUAL prompt used for generation"
+      - "Works correctly for both manual and AI-planned flows"
+      - "Critical for accurate remix functionality"
+
+  key_files:
+    types: "src/types/index.ts (lines 2-10, 13-19, 31-39)"
+    service: "src/services/openaiService.ts (lines 12-36)"
+    main_app: "src/App.tsx (lines 214-338 for generation flow)"
+    proxy: "api/proxy-create-video.ts (lines 68-99 for FormData handling)"
+    store: "src/stores/videoStore.ts"
+    storage: "src/services/storageService.ts"
+
+ui_patterns:
+  reference_implementations:
+    - "sora-2-playground: https://github.com/sshh12/sora-2-playground"
+    - "React Gallery: https://github.com/benhowell/react-grid-gallery"
+
+  recommended_components:
+    - "VideoHistoryGallery: Grid layout showing segment cards with metadata"
+    - "RemixModal: Form with original video metadata + new prompt input"
+    - "ExpirationBadge: Show time remaining or 'Expired' status"
+    - "SegmentCard: Individual segment with remix/re-download buttons"
+
+  ux_principles:
+    - "Separate display: Individual segments vs final concatenated video"
+    - "Clear expiration indicators (countdown timer or 'Expired' badge)"
+    - "Disable remix button after 24 hours with tooltip explanation"
+    - "Re-download option for expired videos (if user wants to view again)"
+    - "Show relationship tree: Original → Remix A, Remix B"
+
+gotchas:
+  storage_pitfalls:
+    - "DON'T store video Blobs in localStorage (too large, 5-10 MB limit)"
+    - "DON'T try to persist Object URLs (invalid after page refresh)"
+    - "DO store only metadata + video_id"
+    - "DO calculate expiresAt = createdAt + 24 hours"
+    - "DO show clear expiration warnings to users"
+
+  remix_limitations:
+    - "ONLY individual segments can be remixed, NOT concatenated final video"
+    - "Multi-segment video (e.g., 3x8s) has 3 separate video_ids, not 1"
+    - "Final concatenated video exists only in browser memory"
+    - "After concatenation, individual segment video_ids are still valid for 24h"
+
+  api_requirements:
+    - "Use snake_case 'remixed_from_video_id' in OpenAI API calls"
+    - "Track createdAt timestamp to calculate expiration"
+    - "Respect 2-second polling interval to avoid rate limiting"
+    - "Check Date.now() < expiresAt before allowing remix"
+
+  naming_conventions:
+    - "Frontend camelCase: openaiVideoId, remixedFromVideoId"
+    - "OpenAI API snake_case: remixed_from_video_id"
+    - "Distinguish: segment.id (local) vs segment.openaiVideoId (OpenAI's)"
+
+  prompt_handling_critical:
+    - "ALWAYS use segment.prompt when saving metadata (NOT formData.prompt or plannedSegments[i].prompt directly)"
+    - "segment.prompt already contains the correct value for both manual and AI-planned flows"
+    - "Using formData.prompt breaks AI-planned segments (all would have same base prompt)"
+    - "The VideoSegment object is the single source of truth for the prompt used"
+    - "This ensures remix shows the EXACT prompt that generated that specific video"
+```
+
+### No Prior Knowledge Test
+✅ This PRP includes:
+- Specific file paths and line numbers for all referenced patterns
+- Complete API parameter specifications in ai_docs
+- Exact naming conventions and case transformations
+- Clear explanation of storage architecture (metadata-only)
+- Understanding of 24-hour limitation and multi-segment constraints
+- Step-by-step implementation tasks with dependency ordering
+- Validation commands and success criteria
+
+An AI agent with no prior knowledge of this codebase can implement this feature using only this PRP and file access.
+
+---
+
+## 📋 Implementation Tasks
+
+### Task 1: Extend Type Definitions
+**File**: `src/types/index.ts`
+**Action**: Add new types and extend existing interfaces for metadata storage
+
+**Extend VideoSegment interface (after line 10):**
+```typescript
+export interface VideoSegment {
+  id: string; // Local segment ID (e.g., "segment-0")
+  openaiVideoId?: string; // OpenAI video_id (format: "video_abc123...")
+  prompt: string;
+  status: 'pending' | 'generating' | 'completed' | 'failed';
+  progress: number;
+  videoBlob?: Blob; // Only in memory during current session
+  videoUrl?: string; // Object URL (lost on refresh)
+  error?: string;
+  createdAt?: number; // Timestamp for expiration tracking
+}
+```
+
+**Add After VideoSegment interface:**
+```typescript
+// Video metadata stored in localStorage (NO video files)
+export interface VideoMetadata {
+  openaiVideoId: string; // OpenAI video_id (required for remix)
+  localId: string; // Local identifier for UI
+  prompt: string;
+  parameters: {
+    seconds: number;
+    size: string;
+    model: string;
+  };
+  createdAt: number; // Timestamp (ms since epoch)
+  expiresAt: number; // createdAt + 24 hours
+  remixedFrom?: string; // Parent video's OpenAI ID
+  remixCount: number; // Number of child remixes
+  isExpired: boolean; // Computed: Date.now() > expiresAt
+}
+
+// Helper function to check if metadata is expired
+export function isVideoExpired(metadata: VideoMetadata): boolean {
+  return Date.now() > metadata.expiresAt;
+}
+
+// Helper to calculate expiration time
+export function calculateExpiresAt(createdAt: number): number {
+  return createdAt + (24 * 60 * 60 * 1000); // 24 hours in milliseconds
+}
+```
+
+**Extend VideoStoreState interface (after line 62):**
+```typescript
+  // Video metadata history (NOT video files)
+  videoHistory: VideoMetadata[];
+  selectedVideoForRemix: VideoMetadata | null;
+
+  // Actions for remix feature
+  saveVideoMetadata: (metadata: VideoMetadata) => void;
+  loadVideoHistory: () => void;
+  deleteVideoMetadata: (openaiVideoId: string) => void;
+  selectVideoForRemix: (metadata: VideoMetadata | null) => void;
+  incrementRemixCount: (openaiVideoId: string) => void;
+```
+
+**Pattern**: Follow existing VideoSegment and VideoStoreState structure
+**Reference**: Lines 2-10 for interface structure, lines 54-73 for store state pattern
+
+---
+
+### Task 2: Extend Storage Service
+**File**: `src/services/storageService.ts`
+**Action**: Add video metadata persistence to localStorage
+
+**Add to STORAGE_KEYS constant (at top of file):**
+```typescript
+const STORAGE_KEYS = {
+  API_KEY: 'sora-api-key',
+  VIDEO_HISTORY: 'sora-video-metadata-history', // Add this line
+} as const;
+```
+
+**Add New Methods (at end of file, before export):**
+```typescript
+  // Video metadata storage (NOT video files, only metadata)
+  saveVideoHistory(metadata: VideoMetadata[]): void {
+    try {
+      // Only store metadata, not video blobs
+      const serializable = metadata.map(m => ({
+        openaiVideoId: m.openaiVideoId,
+        localId: m.localId,
+        prompt: m.prompt,
+        parameters: m.parameters,
+        createdAt: m.createdAt,
+        expiresAt: m.expiresAt,
+        remixedFrom: m.remixedFrom,
+        remixCount: m.remixCount,
+        isExpired: m.isExpired,
+      }));
+      localStorage.setItem(STORAGE_KEYS.VIDEO_HISTORY, JSON.stringify(serializable));
+      console.log(`[StorageService] Saved ${metadata.length} video metadata entries`);
+    } catch (error) {
+      console.error('[StorageService] Failed to save video history:', error);
+    }
+  },
+
+  loadVideoHistory(): VideoMetadata[] {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.VIDEO_HISTORY);
+      if (!stored) return [];
+
+      const parsed = JSON.parse(stored);
+      // Update isExpired flag on load
+      return parsed.map((m: VideoMetadata) => ({
+        ...m,
+        isExpired: Date.now() > m.expiresAt,
+      }));
+    } catch (error) {
+      console.error('[StorageService] Failed to load video history:', error);
+      return [];
+    }
+  },
+
+  clearVideoHistory(): void {
+    localStorage.removeItem(STORAGE_KEYS.VIDEO_HISTORY);
+    console.log('[StorageService] Cleared video history');
+  }
+```
+
+**Pattern**: Follow existing getApiKey/saveApiKey pattern
+**Reference**: Examine current storageService implementation for error handling and structure
+
+---
+
+### Task 3: Update Video Store
+**File**: `src/stores/videoStore.ts`
+**Action**: Add remix-related state and actions
+
+**Add imports at top:**
+```typescript
+import type { VideoStoreState, VideoSegment, VideoMetadata } from '../types';
+```
+
+**Extend Initial State (line 5-12):**
+```typescript
+export const useVideoStore = create<VideoStoreState>((set, get) => ({
+  // ... existing state ...
+  videoHistory: storageService.loadVideoHistory(),
+  selectedVideoForRemix: null,
+
+  // ... existing actions ...
+
+  // New actions for remix feature
+  saveVideoMetadata: (metadata: VideoMetadata) => {
+    const history = [...get().videoHistory, metadata];
+    set({ videoHistory: history });
+    storageService.saveVideoHistory(history);
+  },
+
+  loadVideoHistory: () => {
+    const history = storageService.loadVideoHistory();
+    set({ videoHistory: history });
+  },
+
+  deleteVideoMetadata: (openaiVideoId: string) => {
+    const history = get().videoHistory.filter(v => v.openaiVideoId !== openaiVideoId);
+    set({ videoHistory: history });
+    storageService.saveVideoHistory(history);
+  },
+
+  selectVideoForRemix: (metadata: VideoMetadata | null) => {
+    set({ selectedVideoForRemix: metadata });
+  },
+
+  incrementRemixCount: (openaiVideoId: string) => {
+    const history = get().videoHistory.map(v =>
+      v.openaiVideoId === openaiVideoId ? { ...v, remixCount: v.remixCount + 1 } : v
+    );
+    set({ videoHistory: history });
+    storageService.saveVideoHistory(history);
+  },
+}));
+```
+
+**Pattern**: Follow existing setApiKey/clearApiKey structure
+**Reference**: Lines 15-23 for action pattern with storageService integration
+
+---
+
+### Task 4: Capture OpenAI Video IDs in App.tsx
+**File**: `src/App.tsx`
+**Action**: Store video_id metadata after each segment generation
+
+**Add imports at top:**
+```typescript
+import type { VideoMetadata } from './types';
+import { calculateExpiresAt } from './types';
+```
+
+**Modify handleGenerate function - Add after line 291 (after downloading each segment):**
+
+**Find this section (lines ~289-298):**
+```typescript
+const blob = await openaiService.downloadVideo(job.id, apiKey);
+videoBlobs.push(blob);
+
+// Mark segment as completed
+segment.status = 'completed';
+segment.progress = 100;
+segment.videoBlob = blob;
+setSegments([...segmentList]);
+```
+
+**Add after it:**
+```typescript
+// Store OpenAI video ID and creation time in segment
+segment.openaiVideoId = job.id;
+segment.createdAt = Date.now();
+setSegments([...segmentList]);
+
+// Save metadata for this segment to history
+// CRITICAL: Use segment.prompt (not formData.prompt) to capture the actual prompt used
+// This works for both manual generation and AI-planned segments
+const segmentMetadata: VideoMetadata = {
+  openaiVideoId: job.id,
+  localId: `segment-${i}-${Date.now()}`,
+  prompt: segment.prompt,  // Use segment.prompt for accurate prompt tracking
+  parameters: {
+    seconds: formData.seconds,
+    size: formData.size,
+    model: 'sora-2',
+  },
+  createdAt: Date.now(),
+  expiresAt: calculateExpiresAt(Date.now()),
+  remixCount: 0,
+  isExpired: false,
+};
+saveVideoMetadata(segmentMetadata);
+```
+
+**Destructure from store (around line 19, add to existing destructuring):**
+```typescript
+const {
+  // ... existing
+  saveVideoMetadata,
+  videoHistory,
+  selectVideoForRemix,
+  selectedVideoForRemix,
+  incrementRemixCount,
+  deleteVideoMetadata,
+} = useVideoStore();
+```
+
+**Pattern**: Follow existing video blob handling pattern
+**Reference**: Lines 268-291 for download pattern, segment update pattern
+
+---
+
+### Task 4b: Capture OpenAI Video IDs in handleApprovePlan
+**File**: `src/App.tsx`
+**Action**: Store video_id metadata after each AI-planned segment generation
+
+**Modify handleApprovePlan function - Add after line 173 (after downloading each segment):**
+
+**Find this section (lines ~167-173):**
+```typescript
+const blob = await openaiService.downloadVideo(job.id, apiKey);
+videoBlobs.push(blob);
+
+segment.status = 'completed';
+segment.progress = 100;
+segment.videoBlob = blob;
+setSegments([...segmentList]);
+```
+
+**Add after it:**
+```typescript
+// Store OpenAI video ID and creation time in segment
+segment.openaiVideoId = job.id;
+segment.createdAt = Date.now();
+setSegments([...segmentList]);
+
+// Save metadata for this segment to history
+// segment.prompt already contains plannedSegments[i].prompt (set on line 139)
+const segmentMetadata: VideoMetadata = {
+  openaiVideoId: job.id,
+  localId: `planned-segment-${i}-${Date.now()}`,
+  prompt: segment.prompt,  // AI-planned segment-specific prompt
+  parameters: {
+    seconds: plannedSegments[i].seconds,
+    size: planConfig.size,
+    model: 'sora-2',
+  },
+  createdAt: Date.now(),
+  expiresAt: calculateExpiresAt(Date.now()),
+  remixCount: 0,
+  isExpired: false,
+};
+saveVideoMetadata(segmentMetadata);
+```
+
+**Note**: The store functions (saveVideoMetadata, etc.) are already destructured in Task 4, so no additional imports needed.
+
+**Pattern**: Same as Task 4, but uses plannedSegments[i].seconds and planConfig.size
+**Reference**: Lines 116-186 for AI-planned generation flow
+
+---
+
+### Task 5: Create VideoHistoryGallery Component
+**File**: `src/components/VideoHistoryGallery.tsx` (NEW FILE)
+**Action**: Create gallery component to display video metadata (not video files)
+
+```typescript
+import { useState } from 'react';
+import type { VideoMetadata } from '../types';
+import { isVideoExpired } from '../types';
+
+interface VideoHistoryGalleryProps {
+  videoHistory: VideoMetadata[];
+  onRemix: (metadata: VideoMetadata) => void;
+  onDelete: (openaiVideoId: string) => void;
+  apiKey: string | null;
+}
+
+export function VideoHistoryGallery({ videoHistory, onRemix, onDelete, apiKey }: VideoHistoryGalleryProps) {
+  const [redownloadingId, setRedownloadingId] = useState<string | null>(null);
+
+  if (videoHistory.length === 0) {
+    return (
+      <div className="text-center py-12 text-gray-500">
+        <p className="text-lg">No video history yet. Generate your first video above!</p>
+        <p className="text-sm mt-2">Video metadata will be saved here for 24 hours.</p>
+      </div>
+    );
+  }
+
+  const handleRedownload = async (metadata: VideoMetadata) => {
+    if (!apiKey || isVideoExpired(metadata)) return;
+
+    setRedownloadingId(metadata.openaiVideoId);
+    try {
+      // Re-download video from OpenAI
+      const openaiService = await import('../services/openaiService');
+      const blob = await openaiService.openaiService.downloadVideo(metadata.openaiVideoId, apiKey);
+
+      // Create temporary download link
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `sora-${metadata.localId}.mp4`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('[VideoHistoryGallery] Re-download failed:', error);
+      alert('Failed to re-download video. It may have expired at OpenAI.');
+    } finally {
+      setRedownloadingId(null);
+    }
+  };
+
+  const formatTimeRemaining = (expiresAt: number): string => {
+    const now = Date.now();
+    const remaining = expiresAt - now;
+
+    if (remaining <= 0) return 'Expired';
+
+    const hours = Math.floor(remaining / (60 * 60 * 1000));
+    const minutes = Math.floor((remaining % (60 * 60 * 1000)) / (60 * 1000));
+
+    if (hours > 0) return `${hours}h ${minutes}m remaining`;
+    return `${minutes}m remaining`;
+  };
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {videoHistory.map((metadata) => {
+        const expired = isVideoExpired(metadata);
+        const timeRemaining = formatTimeRemaining(metadata.expiresAt);
+
+        return (
+          <div
+            key={metadata.localId}
+            className={`relative group bg-white/10 backdrop-blur rounded-xl overflow-hidden border transition-all ${
+              expired
+                ? 'border-red-500/30 opacity-60'
+                : 'border-white/20 hover:border-white/40'
+            }`}
+          >
+            {/* Metadata Display (No video preview - video not stored) */}
+            <div className="aspect-video bg-gradient-to-br from-gray-900 to-black flex flex-col items-center justify-center p-6 text-center">
+              <div className="text-6xl mb-4">🎬</div>
+              <p className="text-white/80 text-sm line-clamp-3 mb-2">
+                {metadata.prompt}
+              </p>
+
+              {/* Expiration Status */}
+              <div className={`text-xs font-semibold mt-2 ${
+                expired ? 'text-red-400' : 'text-green-400'
+              }`}>
+                {expired ? '⏰ Expired' : `✓ ${timeRemaining}`}
+              </div>
+            </div>
+
+            {/* Action Buttons Overlay */}
+            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
+              {!expired && (
+                <>
+                  <button
+                    onClick={() => onRemix(metadata)}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold transition-colors text-sm"
+                  >
+                    🎨 Remix
+                  </button>
+                  <button
+                    onClick={() => handleRedownload(metadata)}
+                    disabled={redownloadingId === metadata.openaiVideoId}
+                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold transition-colors text-sm disabled:opacity-50"
+                  >
+                    {redownloadingId === metadata.openaiVideoId ? '...' : '⬇️ Download'}
+                  </button>
+                </>
+              )}
+              <button
+                onClick={() => onDelete(metadata.openaiVideoId)}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold transition-colors text-sm"
+              >
+                🗑️ Delete
+              </button>
+            </div>
+
+            {/* Metadata Info */}
+            <div className="p-4">
+              {/* Parameters */}
+              <div className="flex gap-2 text-xs text-white/60 mb-2">
+                <span>{metadata.parameters.model}</span>
+                <span>•</span>
+                <span>{metadata.parameters.seconds}s</span>
+                <span>•</span>
+                <span>{metadata.parameters.size}</span>
+              </div>
+
+              {/* Relationship Indicators */}
+              <div className="flex flex-wrap gap-2 mb-2">
+                {metadata.remixedFrom && (
+                  <span className="inline-flex items-center px-2 py-1 rounded-md bg-purple-500/20 text-purple-200 text-xs">
+                    🎨 Remix
+                  </span>
+                )}
+                {metadata.remixCount > 0 && (
+                  <span className="inline-flex items-center px-2 py-1 rounded-md bg-green-500/20 text-green-200 text-xs">
+                    {metadata.remixCount} remix{metadata.remixCount > 1 ? 'es' : ''}
+                  </span>
+                )}
+              </div>
+
+              {/* Creation Time */}
+              <p className="text-xs text-white/40">
+                {new Date(metadata.createdAt).toLocaleString()}
+              </p>
+
+              {/* Video ID (for debugging) */}
+              <p className="text-xs text-white/30 font-mono mt-1 truncate">
+                {metadata.openaiVideoId}
+              </p>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+```
+
+**Pattern**: Follow existing component structure with glassmorphism effects
+**Reference**: `src/components/PromptForm.tsx` for styling patterns
+
+**Key Differences from Original Plan:**
+- No video preview (video not stored, only metadata)
+- Shows prompt text + icon instead
+- Re-download button to fetch from OpenAI if needed
+- Clear expiration indicators
+- Disabled remix button when expired
+
+---
+
+### Task 6: Create RemixModal Component
+**File**: `src/components/RemixModal.tsx` (NEW FILE)
+**Action**: Create modal for remix form
+
+```typescript
+import { useState } from 'react';
+import type { VideoMetadata } from '../types';
+import { isVideoExpired } from '../types';
+
+interface RemixModalProps {
+  originalMetadata: VideoMetadata | null;
+  onClose: () => void;
+  onSubmit: (newPrompt: string, keepSettings: boolean) => void;
+  isOpen: boolean;
+}
+
+export function RemixModal({ originalMetadata, onClose, onSubmit, isOpen }: RemixModalProps) {
+  const [newPrompt, setNewPrompt] = useState('');
+  const [keepSettings, setKeepSettings] = useState(true);
+
+  if (!isOpen || !originalMetadata) return null;
+
+  const expired = isVideoExpired(originalMetadata);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPrompt.trim() && !expired) {
+      onSubmit(newPrompt, keepSettings);
+      setNewPrompt('');
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+      <div className="bg-gradient-to-br from-gray-900 to-black border border-white/20 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+        {/* Header */}
+        <div className="sticky top-0 bg-gray-900/95 backdrop-blur px-6 py-4 border-b border-white/10 flex justify-between items-center">
+          <h2 className="text-2xl font-bold text-white">🎨 Remix Video</h2>
+          <button
+            onClick={onClose}
+            className="text-white/60 hover:text-white text-2xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-6">
+          {/* Expiration Warning */}
+          {expired && (
+            <div className="mb-6 p-4 bg-red-500/20 border border-red-500/50 rounded-lg">
+              <p className="text-red-300 text-sm font-semibold">
+                ⏰ This video has expired (older than 24 hours).
+                Remix is no longer available.
+              </p>
+            </div>
+          )}
+
+          {/* Original Video Metadata */}
+          <div className="mb-6">
+            <h3 className="text-sm font-semibold text-white/80 mb-2">Original Video</h3>
+            <div className="p-4 bg-white/5 border border-white/10 rounded-lg">
+              <p className="text-white/80 mb-2">{originalMetadata.prompt}</p>
+              <div className="flex gap-3 text-xs text-white/60">
+                <span>{originalMetadata.parameters.model}</span>
+                <span>•</span>
+                <span>{originalMetadata.parameters.seconds}s</span>
+                <span>•</span>
+                <span>{originalMetadata.parameters.size}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Remix Form */}
+          <form onSubmit={handleSubmit}>
+            {/* New Prompt */}
+            <div className="mb-4">
+              <label className="block text-sm font-semibold text-white/80 mb-2">
+                New Prompt
+              </label>
+              <textarea
+                value={newPrompt}
+                onChange={(e) => setNewPrompt(e.target.value)}
+                placeholder="Describe the changes you want (e.g., 'same shot, warmer lighting' or 'same scene, add morning fog')"
+                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-blue-500/50 min-h-[100px] resize-none"
+                required
+                disabled={expired}
+              />
+              <p className="text-xs text-white/50 mt-1">
+                💡 Tip: Make one change at a time for best results
+              </p>
+            </div>
+
+            {/* Keep Settings Toggle */}
+            <div className="mb-6">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={keepSettings}
+                  onChange={(e) => setKeepSettings(e.target.checked)}
+                  disabled={expired}
+                  className="w-5 h-5 rounded border-white/20 bg-white/5 text-blue-600 focus:ring-2 focus:ring-blue-500/50"
+                />
+                <span className="text-sm text-white/80">
+                  Keep original settings (duration, size, model)
+                </span>
+              </label>
+            </div>
+
+            {/* Original Settings Display */}
+            {keepSettings && (
+              <div className="mb-6 p-4 bg-white/5 rounded-lg border border-white/10">
+                <p className="text-xs text-white/60 mb-2">Using settings:</p>
+                <div className="flex gap-4 text-sm text-white/80">
+                  <span>{originalMetadata.parameters.model}</span>
+                  <span>•</span>
+                  <span>{originalMetadata.parameters.seconds}s</span>
+                  <span>•</span>
+                  <span>{originalMetadata.parameters.size}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 px-6 py-3 bg-white/5 hover:bg-white/10 text-white rounded-lg font-semibold transition-colors border border-white/10"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!newPrompt.trim() || expired}
+                className="flex-1 px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white rounded-lg font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {expired ? 'Expired' : 'Generate Remix'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+```
+
+**Pattern**: Follow glassmorphism and gradient styling from existing components
+**Reference**: `src/components/PromptForm.tsx` for form structure and styling patterns
+
+---
+
+### Task 7: Integrate Remix Flow in App.tsx
+**File**: `src/App.tsx`
+**Action**: Add remix handler and integrate components
+
+**Add State (around line 50, with other useState hooks):**
+```typescript
+const [showRemixModal, setShowRemixModal] = useState(false);
+const [showVideoHistory, setShowVideoHistory] = useState(false);
+```
+
+**Add Remix Handler (after handleGenerate function, around line 340):**
+```typescript
+const handleRemix = async (newPrompt: string, keepSettings: boolean) => {
+  if (!selectedVideoForRemix || !apiKey) return;
+
+  // Check expiration
+  if (isVideoExpired(selectedVideoForRemix)) {
+    setError('This video has expired. Remix is only available for 24 hours after generation.');
+    return;
+  }
+
+  setError(null);
+  reset();
+  setProcessing(true);
+
+  try {
+    setStatus('Creating remix...');
+
+    // Use original settings if keepSettings is true
+    const config = keepSettings
+      ? {
+          prompt: newPrompt,
+          seconds: selectedVideoForRemix.parameters.seconds,
+          size: selectedVideoForRemix.parameters.size,
+          model: selectedVideoForRemix.parameters.model,
+        }
+      : {
+          prompt: newPrompt,
+          seconds: 8,
+          size: '1280x720',
+          model: 'sora-2',
+        };
+
+    // Create segment
+    const segment: VideoSegment = {
+      id: 'remix-segment-0',
+      prompt: newPrompt,
+      status: 'generating',
+      progress: 0,
+      createdAt: Date.now(),
+    };
+    addSegment(segment);
+
+    // Call OpenAI with remixedFromVideoId
+    const job = await openaiService.createVideo({
+      apiKey,
+      prompt: newPrompt,
+      seconds: String(config.seconds),
+      size: config.size,
+      model: config.model,
+      remixedFromVideoId: selectedVideoForRemix.openaiVideoId, // KEY: Pass original video ID
+    });
+
+    // Store OpenAI video ID immediately
+    segment.openaiVideoId = job.id;
+    updateSegment(segment.id, { openaiVideoId: job.id });
+
+    // Poll for completion
+    await openaiService.pollUntilComplete(job.id, apiKey, (progress) => {
+      updateSegment(segment.id, { progress });
+    });
+
+    // Download
+    setStatus('Downloading remixed video...');
+    const blob = await openaiService.downloadVideo(job.id, apiKey);
+    const url = URL.createObjectURL(blob);
+
+    // Update segment
+    updateSegment(segment.id, {
+      status: 'completed',
+      progress: 100,
+      videoBlob: blob,
+      videoUrl: url,
+    });
+
+    setFinalVideo(url);
+    setStatus('Remix complete!');
+
+    // Save metadata to history with relationship
+    const remixMetadata: VideoMetadata = {
+      openaiVideoId: job.id,
+      localId: `remix-${Date.now()}`,
+      prompt: newPrompt,
+      parameters: config,
+      createdAt: Date.now(),
+      expiresAt: calculateExpiresAt(Date.now()),
+      remixedFrom: selectedVideoForRemix.openaiVideoId, // Link to parent
+      remixCount: 0,
+      isExpired: false,
+    };
+
+    saveVideoMetadata(remixMetadata);
+
+    // Increment parent's remix count
+    incrementRemixCount(selectedVideoForRemix.openaiVideoId);
+
+    // Clear selection
+    selectVideoForRemix(null);
+  } catch (err) {
+    console.error('[App] Remix failed:', err);
+    const errorMessage = err instanceof Error ? err.message : 'Remix failed';
+    setError(errorMessage);
+    if (segments.length > 0) {
+      updateSegment(segments[0].id, {
+        status: 'failed',
+        error: errorMessage,
+      });
+    }
+  } finally {
+    setProcessing(false);
+  }
+};
+```
+
+**Add Gallery Handlers:**
+```typescript
+const handleRemixClick = (metadata: VideoMetadata) => {
+  if (isVideoExpired(metadata)) {
+    alert('This video has expired. Remix is only available for 24 hours after generation.');
+    return;
+  }
+  selectVideoForRemix(metadata);
+  setShowRemixModal(true);
+};
+
+const handleDeleteMetadata = (openaiVideoId: string) => {
+  if (confirm('Delete this video from history? (This only removes metadata, not the video file if you downloaded it)')) {
+    deleteVideoMetadata(openaiVideoId);
+  }
+};
+```
+
+**Import New Components (at top):**
+```typescript
+import { VideoHistoryGallery } from './components/VideoHistoryGallery';
+import { RemixModal } from './components/RemixModal';
+import { isVideoExpired } from './types';
+```
+
+**Add UI Section (after VideoPlayer, before closing div, around line 450):**
+```typescript
+{/* Video History Section */}
+{videoHistory.length > 0 && (
+  <section className="mb-12">
+    <div className="flex items-center justify-between mb-6">
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900">📚 Video History</h2>
+        <p className="text-sm text-gray-600 mt-1">
+          Video metadata saved for 24 hours. Remix any video before it expires.
+        </p>
+      </div>
+      <button
+        onClick={() => setShowVideoHistory(!showVideoHistory)}
+        className="text-blue-600 hover:text-blue-700 text-sm font-semibold"
+      >
+        {showVideoHistory ? 'Hide' : 'Show'} History ({videoHistory.length})
+      </button>
+    </div>
+
+    {showVideoHistory && (
+      <VideoHistoryGallery
+        videoHistory={videoHistory}
+        onRemix={handleRemixClick}
+        onDelete={handleDeleteMetadata}
+        apiKey={apiKey}
+      />
+    )}
+  </section>
+)}
+
+{/* Remix Modal */}
+<RemixModal
+  originalMetadata={selectedVideoForRemix}
+  isOpen={showRemixModal}
+  onClose={() => {
+    setShowRemixModal(false);
+    selectVideoForRemix(null);
+  }}
+  onSubmit={handleRemix}
+/>
+```
+
+**Pattern**: Follow existing handleGenerate structure
+**Reference**: Lines 214-338 for generation flow pattern
+
+---
+
+### Task 8: Verify Edge Function Support
+**File**: `api/proxy-create-video.ts`
+**Action**: Verify remix parameter handling (already implemented, just verify)
+
+**Check Lines 26 and 74-75:**
+```typescript
+// Line 26: Extract from FormData
+remixedFromVideoId = formData.get('remixedFromVideoId');
+
+// Line 74-75: Forward to OpenAI
+if (remixedFromVideoId) openaiFormData.append('remixed_from_video_id', remixedFromVideoId);
+```
+
+**Check Lines 35 and 96:**
+```typescript
+// Line 35: Extract from JSON
+remixedFromVideoId = body.remixedFromVideoId;
+
+// Line 96: Forward to OpenAI
+...(remixedFromVideoId && { remixed_from_video_id: remixedFromVideoId })
+```
+
+**Verification Only**: This infrastructure is already correct. Just confirm the parameter flows through both JSON and FormData paths.
+
+**Pattern**: Already follows correct camelCase → snake_case conversion
+**Reference**: Lines 68-99 show complete dual content-type handling
+
+---
+
+## ✅ Validation Gates
+
+### Pre-Implementation Checklist
+- [ ] Read `PRPs/ai_docs/sora-2-remix-api.md` for API specifications
+- [ ] Understand metadata-only storage approach (no video files stored)
+- [ ] Understand 24-hour expiration limitation
+- [ ] Understand that only individual segments can be remixed (not concatenated videos)
+- [ ] Review `src/services/openaiService.ts:13-35` for parameter handling pattern
+
+### Phase 1 Validation: Type Definitions & Storage
+**Run After Task 1-3:**
+```bash
+npm run build
+```
+**Expected**: TypeScript compilation succeeds with no errors
+
+**Manual Check**:
+- [ ] VideoMetadata interface exists in `src/types/index.ts`
+- [ ] VideoSegment has `openaiVideoId` and `createdAt` fields
+- [ ] Helper functions `isVideoExpired()` and `calculateExpiresAt()` exist
+- [ ] VideoStoreState extended with videoHistory and remix actions
+- [ ] storageService has saveVideoHistory/loadVideoHistory methods
+
+### Phase 2 Validation: Metadata Capture (Manual Generation)
+**Run After Task 4:**
+```bash
+npm run dev:vercel
+```
+
+**Test**:
+1. Generate a single 4-second video with prompt "sunset over mountains"
+2. Open browser DevTools → Console
+3. Look for log: `[StorageService] Saved X video metadata entries`
+4. Open Application → Local Storage → `sora-video-metadata-history`
+5. Verify JSON contains metadata with `openaiVideoId` field
+6. Verify `prompt` field contains "sunset over mountains"
+
+**Expected**:
+- [ ] OpenAI video_id is captured and stored in metadata
+- [ ] localStorage contains array of VideoMetadata objects
+- [ ] createdAt and expiresAt timestamps are present
+- [ ] Each metadata entry is ~200-600 bytes (not MB)
+- [ ] prompt field matches the user-entered prompt exactly
+
+### Phase 2b Validation: AI-Planned Prompt Retention
+**Run After Task 4b:**
+```bash
+npm run dev:vercel
+```
+
+**Test**:
+1. Click "Plan with AI" button
+2. Enter base prompt: "A journey through a mystical forest"
+3. Set 3 segments × 4 seconds
+4. Wait for AI planning to complete
+5. Review the AI-generated prompts (each segment should have different prompt)
+6. Click "Approve & Generate Videos"
+7. After all segments complete, open DevTools → Application → Local Storage
+8. Check `sora-video-metadata-history`
+
+**Expected**:
+- [ ] 3 separate metadata entries exist
+- [ ] Each entry has a DIFFERENT prompt (not the base prompt)
+- [ ] Prompts match the AI-planned segment-specific prompts
+- [ ] Example: Segment 1 might be "A mystical forest entrance with morning mist...", Segment 2 "Deep in the forest, ancient trees tower...", etc.
+- [ ] All 3 entries have unique openaiVideoId values
+- [ ] localId uses `planned-segment-X` format
+
+**Critical Validation**:
+```javascript
+// In DevTools Console, run:
+const history = JSON.parse(localStorage.getItem('sora-video-metadata-history'));
+const prompts = history.map(h => h.prompt);
+console.log('Stored prompts:', prompts);
+// Should show 3 DIFFERENT prompts, not the same base prompt 3 times
+```
+
+### Phase 3 Validation: Gallery Display
+**Run After Task 5:**
+```bash
+npm run dev:vercel
+```
+
+**Test**:
+1. Generate 2-3 videos
+2. Scroll down to "Video History" section
+3. Click "Show History"
+4. Hover over metadata cards
+
+**Expected**:
+- [ ] Metadata cards display in grid layout (3 columns on desktop)
+- [ ] Shows prompt text and 🎬 icon (no video preview)
+- [ ] Shows parameters (model, duration, size)
+- [ ] Shows time remaining or "Expired" status
+- [ ] Hover reveals "Remix", "Download", and "Delete" buttons
+- [ ] Expired videos show disabled remix button
+
+### Phase 4 Validation: Remix Flow
+**Run After Task 6-7:**
+```bash
+npm run dev:vercel
+```
+
+**Test 1: Fresh Video Remix (Manual Generation)**
+1. Generate a manual video with prompt "sunset over mountains"
+2. Click "Remix" button on the video
+3. Modal opens showing original metadata
+4. Verify modal shows prompt: "sunset over mountains"
+5. Enter new prompt: "same shot, warmer lighting"
+6. Keep "Keep original settings" checked
+7. Click "Generate Remix"
+
+**Expected**:
+- [ ] Modal opens correctly with metadata display
+- [ ] Modal shows the correct original prompt
+- [ ] Form submission triggers video generation
+- [ ] Console shows: Creating remix with remixedFromVideoId
+- [ ] Progress tracking works
+- [ ] Remix completes and metadata is saved
+- [ ] Original video shows "1 remix" badge
+- [ ] Remixed video shows "🎨 Remix" badge
+
+**Test 1b: AI-Planned Segment Remix**
+1. Use "Plan with AI" to generate 3 segments
+2. After generation, locate the 2nd segment in video history
+3. Click "Remix" on the 2nd segment
+4. Verify modal shows the AI-planned prompt for that specific segment (NOT the base prompt)
+5. Enter new prompt: "same scene, add morning fog"
+6. Click "Generate Remix"
+
+**Expected**:
+- [ ] Modal displays the SEGMENT-SPECIFIC AI-planned prompt
+- [ ] Modal does NOT show the base prompt used for planning
+- [ ] Example: If segment 2 was "Deep in the forest, ancient trees tower above a winding path", modal should show this exact text
+- [ ] Remix generation completes successfully
+- [ ] New remix metadata contains the new prompt
+- [ ] Original segment shows "1 remix" badge
+
+**Test 2: Expiration Handling**
+1. In DevTools Console, manually expire a video:
+```javascript
+const history = JSON.parse(localStorage.getItem('sora-video-metadata-history'));
+history[0].expiresAt = Date.now() - 1000; // Set to past
+localStorage.setItem('sora-video-metadata-history', JSON.stringify(history));
+location.reload();
+```
+2. Try to remix the expired video
+
+**Expected**:
+- [ ] Card shows "⏰ Expired" badge
+- [ ] Remix button is disabled or shows alert
+- [ ] Modal shows expiration warning if opened
+- [ ] Submit button is disabled in modal
+
+### Phase 5 Validation: Relationship Tracking
+**Run After Complete Implementation:**
+
+**Test**:
+1. Generate original video (Video A)
+2. Create remix B from A
+3. Create remix C from A
+4. Refresh page
+
+**Expected**:
+- [ ] Video A shows "2 remixes" badge
+- [ ] Video B shows "Remixed from" badge
+- [ ] Video C shows "Remixed from" badge
+- [ ] All metadata persists after page refresh
+- [ ] OpenAI video IDs maintained across refresh
+- [ ] Expiration timers continue counting down correctly
+
+### Phase 6 Validation: Re-download Feature
+**Test**:
+1. Generate a video
+2. Refresh page (video blob lost from memory)
+3. Click "Download" button in gallery
+
+**Expected**:
+- [ ] Button shows loading state while downloading
+- [ ] Video re-downloads from OpenAI successfully
+- [ ] Browser downloads video file to filesystem
+- [ ] Works for videos less than 24 hours old
+- [ ] Shows error for expired videos
+
+### Final Integration Test
+**Complete Flow:**
+```bash
+npm run build
+npm run preview
+```
+
+**Test Scenario**:
+1. Generate 8-second landscape video: "sunset over mountains"
+2. Check localStorage - metadata is saved
+3. Refresh page - metadata still there
+4. Click "Remix" on the video
+5. Enter prompt: "same shot, switch to 85 mm"
+6. Generate remix
+7. Check localStorage - 2 metadata entries now
+8. Verify original shows "1 remix" badge
+9. Generate second remix: "same lighting, new palette: teal, sand, rust"
+10. Delete the second remix
+11. Verify original shows "1 remix" badge (decremented)
+12. Refresh page - all persists correctly
+
+**Expected**:
+- [ ] All remixes complete successfully
+- [ ] Relationship badges update correctly
+- [ ] Deletion works and updates counts
+- [ ] Data persists across refreshes
+- [ ] No console errors
+- [ ] localStorage only contains metadata (< 5 KB total)
+
+### API Integration Verification
+**Check Network Tab:**
+- [ ] POST `/api/proxy-create-video` includes `remixedFromVideoId` in payload
+- [ ] OpenAI returns response with `remixed_from_video_id` field
+- [ ] Video downloads successfully (GET shows completed status)
+- [ ] Re-download requests go directly to OpenAI API
+
+### Error Handling Validation
+**Test Edge Cases:**
+1. Try to remix with empty prompt → Should show validation error
+2. Try to remix when API key is missing → Should show API key error
+3. Try to remix expired video → Should show expiration error
+4. Simulate network failure during remix → Should show error message
+5. Clear localStorage and refresh → Should show empty history gracefully
+
+**Expected**:
+- [ ] All error cases handled gracefully
+- [ ] User sees clear error messages
+- [ ] App remains stable after errors
+- [ ] No unhandled promise rejections
+
+---
+
+## 📊 Confidence Score
+
+**9/10** - One-Pass Implementation Success Likelihood
+
+**Reasoning**:
+- ✅ Clear understanding of metadata-only storage architecture
+- ✅ 80% of infrastructure already exists and functional
+- ✅ Clear patterns to follow (similar to existing features)
+- ✅ Comprehensive API documentation provided
+- ✅ Specific file paths and line numbers for all changes
+- ✅ Validation gates cover all critical paths
+- ✅ Realistic scope: Only individual segments can be remixed
+- ✅ 24-hour limitation clearly documented
+- ⚠️ Minor risk: UI/styling might need fine-tuning
+- ⚠️ Minor risk: Edge cases with expiration timing
+
+**Validation**: An AI agent can implement this feature successfully using only this PRP, the referenced files, and the Sora 2 API documentation.
+
+---
+
+## 📝 Additional Notes
+
+### Critical Understanding: What Gets Stored
+
+**Stored in localStorage (Persists):**
+- OpenAI video_id (string, ~20 bytes)
+- Prompt text (~100-500 bytes)
+- Parameters (model, size, seconds)
+- Timestamps (createdAt, expiresAt)
+- Relationships (remixedFrom, remixCount)
+- Total per video: ~200-600 bytes
+
+**NOT Stored (Lost on refresh):**
+- Video Blob objects (2-30 MB each)
+- Object URLs (just references)
+- Video player state
+- Thumbnails (can be regenerated if needed)
+
+### User Experience Flow
+
+**First Generation:**
+1. User generates video → Downloads automatically
+2. Metadata saved to localStorage
+3. Video plays in player (Blob in memory)
+
+**After Page Refresh:**
+1. Metadata loads from localStorage
+2. Gallery shows history with metadata cards
+3. User can remix (uses stored video_id at OpenAI)
+4. User can re-download (fetches from OpenAI if < 24h)
+5. Original video Blob is gone (that's OK!)
+
+### Best Practices for Remix Prompts
+Educate users to:
+- Make one change at a time ("same shot, warmer lighting")
+- Use specific language ("switch to 85 mm" vs "make it better")
+- Keep settings consistent unless intentionally changing them
+- Understand 24-hour limitation
+
+### Why Multi-Segment Videos Can't Be Remixed
+
+**Technical Reality:**
+- Multi-segment video (e.g., 3×8s) generates 3 separate videos at OpenAI
+- Each segment has its own `video_id`: `video_abc`, `video_def`, `video_ghi`
+- FFmpeg concatenates them client-side into 1 video
+- The concatenated video never gets uploaded to OpenAI
+- Therefore, there's no single `video_id` for the final concatenated video
+- Solution: Allow remixing individual segments, not the final video
+
+**UX Implication:**
+- Gallery should show individual segments with remix buttons
+- Final concatenated video shown separately with download button only
+- Clear messaging: "Remix individual segments to create variations"
+
+### Future Enhancements (Out of Scope)
+- Side-by-side comparison view
+- Remix strength slider (subtle vs strong)
+- Batch remix operations
+- Search/filter video history by prompt
+- Export/import video metadata
+- Visual countdown timer for expiration
+- Remix chain tree visualization
+- Automatic cleanup of expired metadata (>24h old)
+
+### Performance Considerations
+- Limit video history to 100 most recent entries (prevent localStorage overflow)
+- Lazy load metadata rendering (virtualization for large lists)
+- Debounce expiration status checks
+- Clean up expired entries periodically
+
+### Privacy & Security Notes
+- No video files stored anywhere except user's filesystem
+- API key remains in sessionStorage (cleared on tab close)
+- Video metadata can't be used to reconstruct videos
+- OpenAI automatically deletes videos after 24 hours
+- Users can clear localStorage to remove all metadata
+
+### Gotchas to Remember
+1. **OpenAI ID vs Local ID**: Always use `metadata.openaiVideoId` for remix API calls
+2. **Parameter Format**: `seconds` must be STRING in API calls
+3. **Case Conversion**: Frontend camelCase → OpenAI snake_case
+4. **Expiration Checks**: Always check `isVideoExpired()` before allowing remix
+5. **Memory Management**: Revoke old object URLs when generating new videos
+6. **Re-download Limits**: OpenAI may rate-limit repeated downloads of same video
+7. **Prompt Handling**: ALWAYS use `segment.prompt` when saving metadata, NEVER use `formData.prompt` or `plannedSegments[i].prompt` directly
+
+### Prompt Retention Strategy
+**Why segment.prompt is the single source of truth:**
+- Manual generation: `segment.prompt = formData.prompt` (set in handleGenerate, line 259)
+- AI-planned generation: `segment.prompt = plannedSegments[i].prompt` (set in handleApprovePlan, line 139)
+- The VideoSegment object already contains the correct prompt value for both flows
+- Using segment.prompt ensures remix shows the EXACT prompt that generated that video
+- This prevents bugs where AI-planned segments would all show the base prompt instead of their unique prompts
