@@ -3,8 +3,8 @@ import { useVideoStore } from '../stores/videoStore';
 import { storageService } from '../services/storageService';
 
 export function ApiKeyInput() {
-  const { apiKey, setApiKey } = useVideoStore();
-  const [input, setInput] = useState(apiKey || '');
+  const { openaiApiKey, setOpenAIApiKey, clearOpenAIApiKey } = useVideoStore();
+  const [input, setInput] = useState(openaiApiKey || '');
   const [error, setError] = useState('');
 
   const handleSave = () => {
@@ -15,18 +15,18 @@ export function ApiKeyInput() {
       return;
     }
 
-    if (!storageService.validateApiKey(input)) {
+    if (!storageService.validateApiKey(input, 'openai')) {
       setError('Invalid API key format. Must start with "sk-"');
       return;
     }
 
-    setApiKey(input);
+    setOpenAIApiKey(input);
     setError('');
   };
 
   const handleClear = () => {
     setInput('');
-    setApiKey('');
+    clearOpenAIApiKey();
     setError('');
   };
 
@@ -52,7 +52,7 @@ export function ApiKeyInput() {
         >
           Save
         </button>
-        {apiKey && (
+        {openaiApiKey && (
           <button
             onClick={handleClear}
             className="px-6 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-all font-medium"
@@ -67,7 +67,7 @@ export function ApiKeyInput() {
           <span>⚠</span> {error}
         </p>
       )}
-      {apiKey && !error && (
+      {openaiApiKey && !error && (
         <p className="text-sm text-green-700 mt-3 font-medium flex items-center gap-2" style={{ fontFamily: 'Inter, sans-serif' }}>
           <span>✓</span> API key saved securely
         </p>

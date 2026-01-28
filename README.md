@@ -168,6 +168,16 @@ The app uses these Sora 2 endpoints:
 - `seconds`: `"4"`, `"8"`, or `"12"` (string format required)
 - `size`: Landscape (1280x720, 1792x1024) or Portrait (720x1280, 1024x1792)
 - `input_reference`: Image blob for frame continuity (multipart/form-data)
+- `first_frame`: Image blob for the starting frame (multipart/form-data)
+- `last_frame`: Image blob for the ending frame (multipart/form-data)
+
+### Image Generation
+
+The app includes a dedicated image generation tab for creating first/last frames using OpenAI or Azure OpenAI.
+
+**Endpoints:**
+- `POST /v1/images/generations` (OpenAI)
+- `POST /openai/v1/images/generations` or deployments endpoint (Azure)
 
 ## Troubleshooting
 

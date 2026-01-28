@@ -6,10 +6,17 @@ interface VideoHistoryGalleryProps {
   videoHistory: VideoMetadata[];
   onRemix: (metadata: VideoMetadata) => void;
   onDelete: (openaiVideoId: string) => void;
-  apiKey: string | null;
+  openaiApiKey: string | null;
+  azureApiKey: string;
 }
 
-export function VideoHistoryGallery({ videoHistory, onRemix, onDelete, apiKey }: VideoHistoryGalleryProps) {
+export function VideoHistoryGallery({
+  videoHistory,
+  onRemix,
+  onDelete,
+  openaiApiKey,
+  azureApiKey,
+}: VideoHistoryGalleryProps) {
   const [redownloadingId, setRedownloadingId] = useState<string | null>(null);
 
   if (videoHistory.length === 0) {
@@ -22,13 +29,37 @@ export function VideoHistoryGallery({ videoHistory, onRemix, onDelete, apiKey }:
   }
 
   const handleRedownload = async (metadata: VideoMetadata) => {
-    if (!apiKey || isVideoExpired(metadata)) return;
+    if (isVideoExpired(metadata)) return;
+
+    const activeApiKey = metadata.provider === 'openai' ? openaiApiKey : azureApiKey;
+    if (!activeApiKey) {
+      alert('Missing API key for the provider that created this video.');
+      return;
+    }
+    if (metadata.provider === 'azure' && !metadata.azure?.endpoint) {
+      alert('Missing Azure endpoint for this video. Update your Azure settings and try again.');
+      return;
+    }
 
     setRedownloadingId(metadata.openaiVideoId);
     try {
       // Re-download video from OpenAI
       const openaiService = await import('../services/openaiService');
-      const blob = await openaiService.openaiService.downloadVideo(metadata.openaiVideoId, apiKey);
+      const blob = await openaiService.openaiService.downloadVideo(
+        metadata.openaiVideoId,
+        activeApiKey,
+        {
+          provider: metadata.provider,
+          azure: {
+            apiKey: azureApiKey,
+            endpoint: metadata.azure?.endpoint || '',
+            apiType: metadata.azure?.apiType || 'v1',
+            videoDeployment: metadata.azure?.videoDeployment || '',
+            plannerDeployment: metadata.azure?.plannerDeployment || '',
+            apiVersion: metadata.azure?.apiVersion || '',
+          },
+        }
+      );
 
       // Create temporary download link
       const url = URL.createObjectURL(blob);
@@ -63,6 +94,7 @@ export function VideoHistoryGallery({ videoHistory, onRemix, onDelete, apiKey }:
       {videoHistory.map((metadata) => {
         const expired = isVideoExpired(metadata);
         const timeRemaining = formatTimeRemaining(metadata.expiresAt);
+        const providerLabel = metadata.provider === 'azure' ? 'Azure' : 'OpenAI';
 
         return (
           <div
@@ -119,6 +151,8 @@ export function VideoHistoryGallery({ videoHistory, onRemix, onDelete, apiKey }:
             <div className="p-4">
               {/* Parameters */}
               <div className="flex gap-2 text-xs text-white/60 mb-2">
+                <span>{providerLabel}</span>
+                <span>•</span>
                 <span>{metadata.parameters.model}</span>
                 <span>•</span>
                 <span>{metadata.parameters.seconds}s</span>

@@ -13,7 +13,6 @@ Apply the "Made to Stick" framework (SUCCESS principles):
 - **Emotional**: Make people care
 - **Stories**: Show real moments
 
-CRITICAL: ALL people in prompts MUST be "animated style like Pixar" (NOT photorealistic).
 
 Rules:
 1) Return valid JSON only:
@@ -28,8 +27,6 @@ Rules:
    - Segment k>1 must begin from final frame of k-1
    - Maintain consistent visual style, lighting, subjects
 3) Keep prompts specific and cinematic
-4) All people must be animated Pixar style
-5) Brand-safe, family-friendly content
 `.trim();
 
 export default async function handler(req: Request) {
@@ -42,13 +39,38 @@ export default async function handler(req: Request) {
 
   try {
     const body = await req.json();
-    const { apiKey, basePrompt, secondsPerSegment, numGenerations } = body;
+    const { apiKey, basePrompt, secondsPerSegment, numGenerations, provider, providerConfig } = body;
+    const selectedProvider = provider === 'azure' ? 'azure' : 'openai';
+    const azureSettings = providerConfig?.azure;
+    const normalizeEndpoint = (value: string) => value.replace(/\/+$/, '');
 
-    if (!apiKey || !apiKey.startsWith('sk-')) {
+    if (!apiKey) {
+      return new Response(JSON.stringify({ error: 'Missing API key' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (selectedProvider === 'openai' && !apiKey.startsWith('sk-')) {
       return new Response(JSON.stringify({ error: 'Invalid API key format' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
+    }
+
+    if (selectedProvider === 'azure') {
+      if (!azureSettings?.endpoint || !azureSettings?.plannerDeployment) {
+        return new Response(JSON.stringify({ error: 'Missing Azure settings' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (azureSettings.apiType === 'deployments' && !azureSettings.apiVersion) {
+        return new Response(JSON.stringify({ error: 'Missing Azure api-version' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
     }
 
     if (!basePrompt || !secondsPerSegment || !numGenerations) {
@@ -67,22 +89,40 @@ TOTAL GENERATIONS: ${numGenerations}
 Return exactly ${numGenerations} segments in JSON format.
 `.trim();
 
-    // Call OpenAI Chat API (GPT-4 or similar)
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const isAzure = selectedProvider === 'azure';
+    const azureEndpoint = isAzure ? normalizeEndpoint(azureSettings.endpoint) : '';
+    const azureApiType = isAzure ? (azureSettings.apiType || 'v1') : 'v1';
+
+    const plannerUrl =
+      isAzure && azureApiType === 'deployments'
+        ? `${azureEndpoint}/openai/deployments/${azureSettings.plannerDeployment}/chat/completions?api-version=${encodeURIComponent(azureSettings.apiVersion)}`
+        : isAzure
+          ? `${azureEndpoint}/openai/v1/chat/completions`
+          : 'https://api.openai.com/v1/chat/completions';
+
+    const headers =
+      isAzure
+        ? { 'api-key': apiKey, 'Content-Type': 'application/json' }
+        : { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
+
+    const bodyPayload: any = {
+      messages: [
+        { role: 'system', content: PLANNER_SYSTEM_INSTRUCTIONS },
+        { role: 'user', content: userInput }
+      ],
+      temperature: 0.7,
+      response_format: { type: 'json_object' }
+    };
+
+    if (!isAzure || azureApiType === 'v1') {
+      bodyPayload.model = isAzure ? azureSettings.plannerDeployment : 'gpt-4o';
+    }
+
+    // Call Chat API
+    const response = await fetch(plannerUrl, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o', // or 'gpt-4-turbo'
-        messages: [
-          { role: 'system', content: PLANNER_SYSTEM_INSTRUCTIONS },
-          { role: 'user', content: userInput }
-        ],
-        temperature: 0.7,
-        response_format: { type: 'json_object' }
-      }),
+      headers,
+      body: JSON.stringify(bodyPayload),
     });
 
     if (!response.ok) {

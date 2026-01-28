@@ -12,10 +12,35 @@ export interface VideoSegment {
 }
 
 // Video metadata stored in localStorage (NO video files)
+export type ApiProvider = 'openai' | 'azure';
+
+export type AzureApiType = 'v1' | 'deployments';
+
+export interface AzureProviderSettings {
+  apiKey: string;
+  endpoint: string;
+  apiType: AzureApiType;
+  videoDeployment: string;
+  plannerDeployment: string;
+  imageDeployment: string;
+  apiVersion: string;
+}
+
+export interface AzureProviderMetadata {
+  endpoint: string;
+  apiType: AzureApiType;
+  videoDeployment: string;
+  plannerDeployment: string;
+  imageDeployment?: string;
+  apiVersion: string;
+}
+
 export interface VideoMetadata {
   openaiVideoId: string; // OpenAI video_id (required for remix)
   localId: string; // Local identifier for UI
   prompt: string;
+  provider: ApiProvider;
+  azure?: AzureProviderMetadata;
   parameters: {
     seconds: number;
     size: string;
@@ -58,6 +83,8 @@ export interface GenerationConfig {
 
 // OpenAI API Request Types
 export interface CreateVideoRequest {
+  provider: ApiProvider;
+  providerConfig: ProviderConfig;
   apiKey: string;
   prompt: string;
   seconds: string; // OpenAI API expects string: '4', '8', or '12'
@@ -65,6 +92,8 @@ export interface CreateVideoRequest {
   model: string;
   remixedFromVideoId?: string; // Optional: ID of video to remix from
   inputReference?: Blob; // Optional: Image for frame continuity (last frame of previous video)
+  firstFrame?: Blob; // Optional: Start frame image
+  lastFrame?: Blob; // Optional: End frame image
 }
 
 // Planned Segment from AI
@@ -82,7 +111,10 @@ export interface PlanningResponse {
 // Zustand Store State
 export interface VideoStoreState {
   // State
-  apiKey: string | null;
+  provider: ApiProvider;
+  openaiApiKey: string | null;
+  azureSettings: AzureProviderSettings;
+  settingsPersisted: boolean;
   segments: VideoSegment[];
   finalVideoUrl: string | null;
   isProcessing: boolean;
@@ -94,8 +126,11 @@ export interface VideoStoreState {
   selectedVideoForRemix: VideoMetadata | null;
 
   // Actions
-  setApiKey: (key: string) => void;
-  clearApiKey: () => void;
+  setProvider: (provider: ApiProvider) => void;
+  setOpenAIApiKey: (key: string) => void;
+  clearOpenAIApiKey: () => void;
+  setAzureSettings: (settings: AzureProviderSettings) => void;
+  setSettingsPersisted: (enabled: boolean) => void;
   addSegment: (segment: VideoSegment) => void;
   updateSegment: (id: string, updates: Partial<VideoSegment>) => void;
   setFinalVideo: (url: string) => void;
@@ -112,10 +147,35 @@ export interface VideoStoreState {
   incrementRemixCount: (openaiVideoId: string) => void;
 }
 
+export interface ProviderConfig {
+  provider: ApiProvider;
+  azure: AzureProviderSettings;
+}
+
+// Image Generation Types
+export interface ImageGenerationRequest {
+  provider: ApiProvider;
+  providerConfig: ProviderConfig;
+  apiKey: string;
+  prompt: string;
+  size: string;
+  model: string;
+  count: number;
+}
+
+export interface ImageGenerationResponse {
+  data: Array<{
+    b64_json?: string;
+    url?: string;
+  }>;
+}
+
 // Form Data Types
 export interface PromptFormData {
   prompt: string;
   seconds: number;
   numSegments: number;
   size: string;
+  firstFrame?: File | null;
+  lastFrame?: File | null;
 }

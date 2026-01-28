@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ApiKeyInput } from './components/ApiKeyInput';
+import { SettingsPage } from './components/SettingsPage';
 import { PromptForm } from './components/PromptForm';
 import { PromptPlanner } from './components/PromptPlanner';
 import { OverallProgress } from './components/OverallProgress';
@@ -8,17 +8,32 @@ import { VideoPlayer } from './components/VideoPlayer';
 import { ErrorDisplay } from './components/ErrorDisplay';
 import { VideoHistoryGallery } from './components/VideoHistoryGallery';
 import { RemixModal } from './components/RemixModal';
+import { ImageGenerator } from './components/ImageGenerator';
 import { useVideoStore } from './stores/videoStore';
 import { openaiService } from './services/openaiService';
 import { videoService } from './services/videoService';
 import { planningService } from './services/planningService';
+import { storageService } from './services/storageService';
+import { imageService } from './services/imageService';
 import { extractLastFrame } from './utils/videoFrameExtractor';
-import type { PromptFormData, VideoSegment, PlannedSegment, VideoMetadata } from './types';
+import { resizeImageBlob } from './utils/imageResizer';
+import type {
+  ApiProvider,
+  AzureProviderMetadata,
+  ProviderConfig,
+  PromptFormData,
+  VideoSegment,
+  PlannedSegment,
+  VideoMetadata,
+} from './types';
+import type { GeneratedImage } from './components/ImageGenerator';
 import { calculateExpiresAt, isVideoExpired } from './types';
 
 export default function App() {
   const {
-    apiKey,
+    provider,
+    openaiApiKey,
+    azureSettings,
     isProcessing,
     setProcessing,
     error,
@@ -47,6 +62,13 @@ export default function App() {
   const [planConfig, setPlanConfig] = useState<PromptFormData | null>(null);
   const [showRemixModal, setShowRemixModal] = useState(false);
   const [showVideoHistory, setShowVideoHistory] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [activeTab, setActiveTab] = useState<'video' | 'image'>('video');
+  const [imageGenerationError, setImageGenerationError] = useState<string | null>(null);
+  const [isGeneratingImages, setIsGeneratingImages] = useState(false);
+  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([]);
+  const [selectedFirstFrame, setSelectedFirstFrame] = useState<GeneratedImage | null>(null);
+  const [selectedLastFrame, setSelectedLastFrame] = useState<GeneratedImage | null>(null);
 
   // Initialize FFmpeg on mount
   useEffect(() => {
@@ -79,6 +101,59 @@ export default function App() {
     };
   }, [finalVideoUrl]);
 
+  const getApiKeyForProvider = (targetProvider: ApiProvider) =>
+    targetProvider === 'openai' ? openaiApiKey : azureSettings.apiKey;
+
+  const getEffectiveAzureSettings = (override?: AzureProviderMetadata) => ({
+    apiKey: azureSettings.apiKey,
+    endpoint: override?.endpoint || azureSettings.endpoint,
+    apiType: override?.apiType || azureSettings.apiType,
+    videoDeployment: override?.videoDeployment || azureSettings.videoDeployment,
+    plannerDeployment: override?.plannerDeployment || azureSettings.plannerDeployment,
+    imageDeployment: override?.imageDeployment || azureSettings.imageDeployment,
+    apiVersion: override?.apiVersion || azureSettings.apiVersion,
+  });
+
+  const getProviderConfig = (
+    targetProvider: ApiProvider,
+    overrideAzure?: AzureProviderMetadata
+  ): ProviderConfig => ({
+    provider: targetProvider,
+    azure: overrideAzure ? getEffectiveAzureSettings(overrideAzure) : azureSettings,
+  });
+
+  const getAzureMetadata = (): AzureProviderMetadata => ({
+    endpoint: azureSettings.endpoint,
+    apiType: azureSettings.apiType,
+    videoDeployment: azureSettings.videoDeployment,
+    plannerDeployment: azureSettings.plannerDeployment,
+    imageDeployment: azureSettings.imageDeployment,
+    apiVersion: azureSettings.apiVersion,
+  });
+
+  const validateProviderSettings = (
+    targetProvider: ApiProvider,
+    overrideAzure?: AzureProviderMetadata
+  ): string | null => {
+    if (targetProvider === 'openai') {
+      if (!openaiApiKey) return 'Please add your OpenAI API key in Settings.';
+      if (!storageService.validateApiKey(openaiApiKey, 'openai')) {
+        return 'OpenAI API key must start with "sk-".';
+      }
+      return null;
+    }
+
+    const effectiveAzure = getEffectiveAzureSettings(overrideAzure);
+    if (!effectiveAzure.apiKey) return 'Please add your Azure OpenAI API key in Settings.';
+    if (!effectiveAzure.endpoint) return 'Please add your Azure endpoint in Settings.';
+    if (!effectiveAzure.videoDeployment) return 'Please add your Azure video deployment in Settings.';
+    if (!effectiveAzure.plannerDeployment) return 'Please add your Azure planner deployment in Settings.';
+    if (effectiveAzure.apiType === 'deployments' && !effectiveAzure.apiVersion) {
+      return 'Please add your Azure API version in Settings.';
+    }
+    return null;
+  };
+
   const estimateMemoryUsage = (formData: PromptFormData): number => {
     // Estimate ~8MB per second of video
     const bytesPerSecond = 8 * 1024 * 1024;
@@ -86,8 +161,9 @@ export default function App() {
   };
 
   const handlePlanWithAI = async (formData: PromptFormData) => {
-    if (!apiKey) {
-      setError('Please enter your OpenAI API key first');
+    const providerError = validateProviderSettings(provider);
+    if (providerError) {
+      setError(providerError);
       return;
     }
 
@@ -95,8 +171,15 @@ export default function App() {
       setIsPlanning(true);
       setError(null);
 
+      const activeApiKey = getApiKeyForProvider(provider);
+      if (!activeApiKey) {
+        setError('Missing API key for selected provider.');
+        return;
+      }
+
       const segments = await planningService.planPrompts(
-        apiKey,
+        activeApiKey,
+        getProviderConfig(provider),
         formData.prompt,
         formData.seconds,
         formData.numSegments
@@ -124,8 +207,115 @@ export default function App() {
     setPlanConfig(null);
   };
 
+  const promptForFrames = (prompt: string) =>
+    `${prompt}. Keep composition clear, centered subject, high contrast, no text.`;
+
+  const parseSize = (size: string) => {
+    const [width, height] = size.split('x').map((value) => Number(value));
+    return { width, height };
+  };
+
+  const handleGenerateImages = async (prompt: string, size: string) => {
+    const providerError = validateProviderSettings(provider);
+    if (providerError) {
+      setImageGenerationError(providerError);
+      return;
+    }
+
+    setIsGeneratingImages(true);
+    setImageGenerationError(null);
+
+    try {
+      const activeApiKey = getApiKeyForProvider(provider);
+      if (!activeApiKey) {
+        throw new Error('Missing API key for selected provider.');
+      }
+
+      const modelName = provider === 'azure'
+        ? azureSettings.imageDeployment || azureSettings.plannerDeployment || azureSettings.videoDeployment
+        : 'gpt-image-1';
+
+      const [firstResponse, lastResponse] = await Promise.all([
+        imageService.generateImages({
+          provider,
+          providerConfig: getProviderConfig(provider),
+          apiKey: activeApiKey,
+          prompt: promptForFrames(`${prompt} (first frame)`),
+          size,
+          model: modelName,
+          count: 1,
+        }),
+        imageService.generateImages({
+          provider,
+          providerConfig: getProviderConfig(provider),
+          apiKey: activeApiKey,
+          prompt: promptForFrames(`${prompt} (last frame)`),
+          size,
+          model: modelName,
+          count: 1,
+        }),
+      ]);
+
+      const response = {
+        data: [...(firstResponse.data || []), ...(lastResponse.data || [])],
+      };
+
+      const batchId = Date.now();
+      const images: GeneratedImage[] = (response.data || []).map((item: any, index: number) => {
+        const b64 = item.b64_json;
+        const url = b64 ? `data:image/png;base64,${b64}` : item.url;
+        const byteString = b64 ? atob(b64) : '';
+        const byteNumbers = b64 ? Array.from(byteString, (char) => char.charCodeAt(0)) : [];
+        const byteArray = b64 ? new Uint8Array(byteNumbers) : new Uint8Array();
+        const blob = b64 ? new Blob([byteArray], { type: 'image/png' }) : null;
+        const file = blob
+          ? new File([blob], `generated-${batchId}-${index}.png`, { type: 'image/png' })
+          : new File([], `generated-${batchId}-${index}.png`);
+
+        return {
+          id: `image-${batchId}-${index}`,
+          prompt,
+          url,
+          file,
+        };
+      });
+
+      setGeneratedImages(images);
+      if (images.length) {
+        setSelectedFirstFrame(images[0]);
+        if (images.length > 1) {
+          setSelectedLastFrame(images[1]);
+        }
+      }
+      setActiveTab('video');
+    } catch (err: any) {
+      setImageGenerationError(err.message || 'Failed to generate images.');
+    } finally {
+      setIsGeneratingImages(false);
+    }
+  };
+
+  const handleSelectFirstFrame = (image: GeneratedImage) => {
+    setSelectedFirstFrame(image);
+  };
+
+  const handleSelectLastFrame = (image: GeneratedImage) => {
+    setSelectedLastFrame(image);
+  };
+
   const handleApprovePlan = async () => {
-    if (!plannedSegments || !planConfig || !apiKey) return;
+    if (!plannedSegments || !planConfig) return;
+
+    const providerError = validateProviderSettings(provider);
+    if (providerError) {
+      setError(providerError);
+      return;
+    }
+
+    if (plannedSegments.length > 1 && !ffmpegReady) {
+      setError('FFmpeg is still loading. Please wait a moment.');
+      return;
+    }
 
     try {
       setProcessing(true);
@@ -155,17 +345,46 @@ export default function App() {
         setSegments([...segmentList]);
 
         try {
+          const activeApiKey = getApiKeyForProvider(provider);
+          if (!activeApiKey) {
+            throw new Error('Missing API key for selected provider.');
+          }
+          const modelName = provider === 'azure' ? azureSettings.videoDeployment : 'sora-2';
+
+          const segmentFirstFrame = i === 0
+            ? selectedFirstFrame?.file || planConfig.firstFrame || undefined
+            : undefined;
+          const segmentLastFrame =
+            i === plannedSegments.length - 1
+              ? selectedLastFrame?.file || planConfig.lastFrame || undefined
+              : undefined;
+
+          const { width, height } = parseSize(planConfig.size);
+          const resizedFirstFrame = segmentFirstFrame
+            ? await resizeImageBlob(segmentFirstFrame, width, height)
+            : undefined;
+          const resizedLastFrame = segmentLastFrame
+            ? await resizeImageBlob(segmentLastFrame, width, height)
+            : undefined;
+
+          const referenceFrame =
+            provider === 'openai' ? lastFrameBlob || resizedFirstFrame : lastFrameBlob;
+
           // Create video job with frame continuity (if not first segment)
           const job = await openaiService.createVideo({
-            apiKey,
+            provider,
+            providerConfig: getProviderConfig(provider),
+            apiKey: activeApiKey,
             prompt: plannedSegments[i].prompt,
             seconds: String(plannedSegments[i].seconds),
             size: planConfig.size,
-            model: 'sora-2',
-            inputReference: lastFrameBlob, // Use last frame from previous video
+            model: modelName,
+            inputReference: referenceFrame, // Use last frame from previous video
+            firstFrame: provider === 'azure' ? resizedFirstFrame || undefined : undefined,
+            lastFrame: provider === 'azure' ? resizedLastFrame || undefined : undefined,
           });
 
-          await openaiService.pollUntilComplete(job.id, apiKey, (segmentProgress) => {
+          await openaiService.pollUntilComplete(job.id, activeApiKey, getProviderConfig(provider), (segmentProgress) => {
             segment.progress = segmentProgress;
             setSegments([...segmentList]);
 
@@ -175,7 +394,7 @@ export default function App() {
           });
 
           setStatus(`Downloading segment ${i + 1}/${plannedSegments.length}...`);
-          const blob = await openaiService.downloadVideo(job.id, apiKey);
+          const blob = await openaiService.downloadVideo(job.id, activeApiKey, getProviderConfig(provider));
           videoBlobs.push(blob);
 
           segment.status = 'completed';
@@ -194,10 +413,12 @@ export default function App() {
             openaiVideoId: job.id,
             localId: `planned-segment-${i}-${Date.now()}`,
             prompt: segment.prompt,  // AI-planned segment-specific prompt
+            provider,
+            ...(provider === 'azure' ? { azure: getAzureMetadata() } : {}),
             parameters: {
               seconds: plannedSegments[i].seconds,
               size: planConfig.size,
-              model: 'sora-2',
+              model: modelName,
             },
             createdAt: Date.now(),
             expiresAt: calculateExpiresAt(Date.now()),
@@ -246,12 +467,13 @@ export default function App() {
   };
 
   const handleGenerate = async (formData: PromptFormData) => {
-    if (!apiKey) {
-      setError('Please enter your OpenAI API key first');
+    const providerError = validateProviderSettings(provider);
+    if (providerError) {
+      setError(providerError);
       return;
     }
 
-    if (!ffmpegReady) {
+    if (formData.numSegments > 1 && !ffmpegReady) {
       setError('FFmpeg is still loading. Please wait a moment.');
       return;
     }
@@ -281,6 +503,8 @@ export default function App() {
       const videoBlobs: Blob[] = [];
       const segmentList: VideoSegment[] = [];
       let lastFrameBlob: Blob | undefined = undefined;
+      const selectedFirstFile = selectedFirstFrame?.file || formData.firstFrame || undefined;
+      const selectedLastFile = selectedLastFrame?.file || formData.lastFrame || undefined;
 
       // Generate each segment
       for (let i = 0; i < formData.numSegments; i++) {
@@ -298,18 +522,41 @@ export default function App() {
         setSegments([...segmentList]);
 
         try {
+          const activeApiKey = getApiKeyForProvider(provider);
+          if (!activeApiKey) {
+            throw new Error('Missing API key for selected provider.');
+          }
+          const modelName = provider === 'azure' ? azureSettings.videoDeployment : 'sora-2';
+
+          const segmentFirstFrame = i === 0 ? selectedFirstFile : undefined;
+          const segmentLastFrame =
+            i === formData.numSegments - 1 ? selectedLastFile : undefined;
+          const { width, height } = parseSize(formData.size);
+          const resizedFirstFrame = segmentFirstFrame
+            ? await resizeImageBlob(segmentFirstFrame, width, height)
+            : undefined;
+          const resizedLastFrame = segmentLastFrame
+            ? await resizeImageBlob(segmentLastFrame, width, height)
+            : undefined;
+          const referenceFrame =
+            provider === 'openai' ? lastFrameBlob || resizedFirstFrame : lastFrameBlob;
+
           // Create video job with frame continuity (if not first segment)
           const job = await openaiService.createVideo({
-            apiKey,
+            provider,
+            providerConfig: getProviderConfig(provider),
+            apiKey: activeApiKey,
             prompt: formData.prompt,
             seconds: String(formData.seconds), // Convert to string for OpenAI API
             size: formData.size,
-            model: 'sora-2',
-            inputReference: lastFrameBlob, // Use last frame from previous video
+            model: modelName,
+            inputReference: referenceFrame, // Use last frame from previous video
+            firstFrame: provider === 'azure' ? resizedFirstFrame || undefined : undefined,
+            lastFrame: provider === 'azure' ? resizedLastFrame || undefined : undefined,
           });
 
           // Poll for completion
-          await openaiService.pollUntilComplete(job.id, apiKey, (segmentProgress) => {
+          await openaiService.pollUntilComplete(job.id, activeApiKey, getProviderConfig(provider), (segmentProgress) => {
             // Update segment progress
             segment.progress = segmentProgress;
             setSegments([...segmentList]);
@@ -322,7 +569,7 @@ export default function App() {
 
           // Download video
           setStatus(`Downloading segment ${i + 1}/${formData.numSegments}...`);
-          const blob = await openaiService.downloadVideo(job.id, apiKey);
+          const blob = await openaiService.downloadVideo(job.id, activeApiKey, getProviderConfig(provider));
           videoBlobs.push(blob);
 
           // Mark segment as completed
@@ -343,10 +590,12 @@ export default function App() {
             openaiVideoId: job.id,
             localId: `segment-${i}-${Date.now()}`,
             prompt: segment.prompt,  // Use segment.prompt for accurate prompt tracking
+            provider,
+            ...(provider === 'azure' ? { azure: getAzureMetadata() } : {}),
             parameters: {
               seconds: formData.seconds,
               size: formData.size,
-              model: 'sora-2',
+              model: modelName,
             },
             createdAt: Date.now(),
             expiresAt: calculateExpiresAt(Date.now()),
@@ -406,10 +655,28 @@ export default function App() {
     setCurrentSegment(0);
     setTotalSegments(0);
     setSegments([]);
+    setSelectedFirstFrame(null);
+    setSelectedLastFrame(null);
   };
 
   const handleRemix = async (newPrompt: string, keepSettings: boolean) => {
-    if (!selectedVideoForRemix || !apiKey) return;
+    if (!selectedVideoForRemix) return;
+
+    const remixProvider = keepSettings ? selectedVideoForRemix.provider : provider;
+    const providerError = validateProviderSettings(
+      remixProvider,
+      keepSettings ? selectedVideoForRemix.azure : undefined
+    );
+    if (providerError) {
+      setError(providerError);
+      return;
+    }
+
+    const activeApiKey = getApiKeyForProvider(remixProvider);
+    if (!activeApiKey) {
+      setError('Missing API key for selected provider.');
+      return;
+    }
 
     // Check expiration
     if (isVideoExpired(selectedVideoForRemix)) {
@@ -431,12 +698,16 @@ export default function App() {
             seconds: selectedVideoForRemix.parameters.seconds,
             size: selectedVideoForRemix.parameters.size,
             model: selectedVideoForRemix.parameters.model,
+            provider: selectedVideoForRemix.provider,
+            azure: selectedVideoForRemix.azure,
           }
         : {
             prompt: newPrompt,
             seconds: 8,
             size: '1280x720',
-            model: 'sora-2',
+            model: remixProvider === 'azure' ? azureSettings.videoDeployment : 'sora-2',
+            provider: remixProvider,
+            azure: remixProvider === 'azure' ? getAzureMetadata() : undefined,
           };
 
       // Create segment
@@ -452,7 +723,9 @@ export default function App() {
 
       // Call OpenAI with remixedFromVideoId
       const job = await openaiService.createVideo({
-        apiKey,
+        provider: config.provider,
+        providerConfig: getProviderConfig(remixProvider, keepSettings ? selectedVideoForRemix.azure : undefined),
+        apiKey: activeApiKey,
         prompt: newPrompt,
         seconds: String(config.seconds),
         size: config.size,
@@ -465,14 +738,23 @@ export default function App() {
       setSegments([...segmentList]);
 
       // Poll for completion
-      await openaiService.pollUntilComplete(job.id, apiKey, (segmentProgress) => {
+      await openaiService.pollUntilComplete(
+        job.id,
+        activeApiKey,
+        getProviderConfig(remixProvider, keepSettings ? selectedVideoForRemix.azure : undefined),
+        (segmentProgress) => {
         segment.progress = segmentProgress;
         setSegments([...segmentList]);
-      });
+        }
+      );
 
       // Download
       setStatus('Downloading remixed video...');
-      const blob = await openaiService.downloadVideo(job.id, apiKey);
+      const blob = await openaiService.downloadVideo(
+        job.id,
+        activeApiKey,
+        getProviderConfig(remixProvider, keepSettings ? selectedVideoForRemix.azure : undefined)
+      );
       const url = URL.createObjectURL(blob);
 
       // Update segment
@@ -490,7 +772,13 @@ export default function App() {
         openaiVideoId: job.id,
         localId: `remix-${Date.now()}`,
         prompt: newPrompt,
-        parameters: config,
+        provider: config.provider,
+        ...(config.provider === 'azure' && config.azure ? { azure: config.azure } : {}),
+        parameters: {
+          seconds: config.seconds,
+          size: config.size,
+          model: config.model,
+        },
         createdAt: Date.now(),
         expiresAt: calculateExpiresAt(Date.now()),
         remixedFrom: selectedVideoForRemix.openaiVideoId, // Link to parent
@@ -548,7 +836,7 @@ export default function App() {
             Create cinematic videos with natural language
           </h1>
           <p className="text-gray-600 text-lg max-w-2xl mx-auto leading-relaxed" style={{ fontFamily: 'Inter, sans-serif' }}>
-            Generate extended AI videos with OpenAI Sora 2. Seamless frame continuity, AI-powered planning, and browser-based processing.
+            Generate extended AI videos with Sora 2 on OpenAI or Azure OpenAI. Seamless frame continuity, AI-powered planning, and browser-based processing.
           </p>
         </header>
 
@@ -576,58 +864,133 @@ export default function App() {
         )}
 
         <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-10 max-w-3xl mx-auto">
-          <ApiKeyInput />
-
-          {error && <ErrorDisplay error={error} onDismiss={() => setError(null)} />}
-
-          {!ffmpegReady && !error && (
-            <div className="text-center py-16">
-              <div className="relative inline-block">
-                <div className="animate-spin rounded-full h-12 w-12 border-2 border-gray-200 border-t-gray-900 mx-auto mb-6"></div>
-              </div>
-              <p className="text-gray-900 font-medium text-base mb-2" style={{ fontFamily: 'Inter, sans-serif' }}>Loading FFmpeg.wasm...</p>
-              <p className="text-gray-500 text-sm">Preparing video processing engine</p>
-            </div>
-          )}
-
-          {ffmpegReady && !finalVideoUrl && !plannedSegments && (
-            <PromptForm
-              onSubmit={handleGenerate}
-              onPlanWithAI={handlePlanWithAI}
-              disabled={isProcessing || isPlanning}
-            />
-          )}
-
-          {plannedSegments && (
-            <PromptPlanner
-              plannedSegments={plannedSegments}
-              onEdit={handleEditPlannedSegment}
-              onApprove={handleApprovePlan}
-              onCancel={handleCancelPlan}
-              isGenerating={isProcessing}
-            />
-          )}
-
-          {isProcessing && (
+          {showSettings ? (
+            <SettingsPage onClose={() => setShowSettings(false)} />
+          ) : (
             <>
-              <OverallProgress
-                progress={progress}
-                status={status}
-                currentSegment={currentSegment}
-                totalSegments={totalSegments}
-              />
+              <div className="flex items-center justify-between mb-10">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">Generation</h2>
+                  <p className="text-sm text-gray-600">
+                    Active provider: {provider === 'openai' ? 'OpenAI' : 'Azure OpenAI'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowSettings(true)}
+                  className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 transition-all font-medium"
+                  style={{ fontFamily: 'Inter, sans-serif' }}
+                >
+                  Settings
+                </button>
+              </div>
 
-              {segments.length > 0 && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mt-6">
-                  {segments.map((segment, index) => (
-                    <SegmentProgress key={segment.id} segment={segment} index={index} />
-                  ))}
+              {error && <ErrorDisplay error={error} onDismiss={() => setError(null)} />}
+
+              {!ffmpegReady && !error && (
+                <div className="text-center py-16">
+                  <div className="relative inline-block">
+                    <div className="animate-spin rounded-full h-12 w-12 border-2 border-gray-200 border-t-gray-900 mx-auto mb-6"></div>
+                  </div>
+                  <p className="text-gray-900 font-medium text-base mb-2" style={{ fontFamily: 'Inter, sans-serif' }}>Loading FFmpeg.wasm...</p>
+                  <p className="text-gray-500 text-sm">Preparing video processing engine</p>
                 </div>
               )}
+
+              {ffmpegReady && !finalVideoUrl && !plannedSegments && (
+                <>
+                  <div className="flex items-center gap-3 mb-8">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('video')}
+                      className={`px-4 py-2 rounded-lg text-sm font-semibold border transition-all ${
+                        activeTab === 'video'
+                          ? 'bg-black text-white border-black'
+                          : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
+                      }`}
+                    >
+                      Video
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('image')}
+                      className={`px-4 py-2 rounded-lg text-sm font-semibold border transition-all ${
+                        activeTab === 'image'
+                          ? 'bg-black text-white border-black'
+                          : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
+                      }`}
+                    >
+                      Image
+                    </button>
+                  </div>
+
+                  {activeTab === 'video' ? (
+                    <PromptForm
+                      onSubmit={handleGenerate}
+                      onPlanWithAI={handlePlanWithAI}
+                      firstFrame={selectedFirstFrame?.file || null}
+                      lastFrame={selectedLastFrame?.file || null}
+                      onFirstFrameChange={(file) => setSelectedFirstFrame(file ? {
+                        id: `manual-first-${Date.now()}`,
+                        prompt: 'Manual upload',
+                        url: URL.createObjectURL(file),
+                        file,
+                      } : null)}
+                      onLastFrameChange={(file) => setSelectedLastFrame(file ? {
+                        id: `manual-last-${Date.now()}`,
+                        prompt: 'Manual upload',
+                        url: URL.createObjectURL(file),
+                        file,
+                      } : null)}
+                      disabled={isProcessing || isPlanning}
+                    />
+                  ) : (
+                    <ImageGenerator
+                      images={generatedImages}
+                      isGenerating={isGeneratingImages}
+                      error={imageGenerationError}
+                      onGenerate={handleGenerateImages}
+                      onSelectFirstFrame={handleSelectFirstFrame}
+                      onSelectLastFrame={handleSelectLastFrame}
+                      selectedFirstFrameId={selectedFirstFrame?.id || null}
+                      selectedLastFrameId={selectedLastFrame?.id || null}
+                      disabled={isProcessing || isPlanning}
+                    />
+                  )}
+                </>
+              )}
+
+              {plannedSegments && (
+                <PromptPlanner
+                  plannedSegments={plannedSegments}
+                  onEdit={handleEditPlannedSegment}
+                  onApprove={handleApprovePlan}
+                  onCancel={handleCancelPlan}
+                  isGenerating={isProcessing}
+                />
+              )}
+
+              {isProcessing && (
+                <>
+                  <OverallProgress
+                    progress={progress}
+                    status={status}
+                    currentSegment={currentSegment}
+                    totalSegments={totalSegments}
+                  />
+
+                  {segments.length > 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mt-6">
+                      {segments.map((segment, index) => (
+                        <SegmentProgress key={segment.id} segment={segment} index={index} />
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {finalVideoUrl && <VideoPlayer url={finalVideoUrl} onGenerateNew={handleGenerateNew} />}
             </>
           )}
-
-          {finalVideoUrl && <VideoPlayer url={finalVideoUrl} onGenerateNew={handleGenerateNew} />}
         </div>
 
         {/* Video History Section */}
@@ -653,7 +1016,8 @@ export default function App() {
                 videoHistory={videoHistory}
                 onRemix={handleRemixClick}
                 onDelete={handleDeleteMetadata}
-                apiKey={apiKey}
+                openaiApiKey={openaiApiKey}
+                azureApiKey={azureSettings.apiKey}
               />
             )}
           </section>
