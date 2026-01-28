@@ -27,3 +27,4 @@ dist-ssr
 # Local env and alternate lockfiles
 .env
 pnpm-lock.yaml
+.env*.local

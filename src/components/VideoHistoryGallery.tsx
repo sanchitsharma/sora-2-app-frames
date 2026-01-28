@@ -56,6 +56,7 @@ export function VideoHistoryGallery({
             apiType: metadata.azure?.apiType || 'v1',
             videoDeployment: metadata.azure?.videoDeployment || '',
             plannerDeployment: metadata.azure?.plannerDeployment || '',
+            imageDeployment: metadata.azure?.imageDeployment || '',
             apiVersion: metadata.azure?.apiVersion || '',
           },
         }
